@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{% block title %}TUM Lecture Finder{% endblock %}</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <link rel="icon" href="/favicon.ico" type="image/svg+xml" />
+    <meta
+      name="description"
+      content="Search across all TU Munich courses — full-text and semantic search."
+    />
+    <meta name="theme-color" content="#0065bd" />
+  </head>
+  <body>
+    <nav class="navbar">
+      <div class="nav-content">
+        <a href="/" class="nav-brand">
+          <span class="nav-logo">TUM</span>
+          <span class="nav-title">Lecture Finder</span>
+        </a>
+        <div class="nav-links">
+          <a
+            href="/"
+            class="nav-link {% block nav_search_active %}{% endblock %}"
+            >Search</a
+          >
+          <a
+            href="/stats"
+            class="nav-link {% block nav_stats_active %}{% endblock %}"
+            >Stats</a
+          >
+        </div>
+      </div>
+    </nav>
+
+    <main class="container">{% block content %}{% endblock %}</main>
+
+    <footer class="footer">
+      <div class="footer-content">
+        <p>
+          TUM Lecture Finder &mdash; Unofficial course search tool for
+          <a href="https://www.tum.de" rel="noopener noreferrer" target="_blank"
+            >Technical University of Munich</a
+          >
+        </p>
+        <p class="footer-sub">
+          Data sourced from the public TUMonline API. Not affiliated with TUM.{%
+          if last_updated %} &middot; Last updated: {{ last_updated }}{% endif
+          %}
+        </p>
+      </div>
+    </footer>
+
+    {% block scripts %}{% endblock %}
+  </body>
+</html>

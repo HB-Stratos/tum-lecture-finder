@@ -1,0 +1,100 @@
+{% extends "base.html" %} {% block nav_stats_active %}active{% endblock %} {%
+block title %}Statistics — TUM Lecture Finder{% endblock %} {% block content %}
+<div class="stats-page">
+  <h1>Database Statistics</h1>
+
+  <div class="stats-overview">
+    <div class="stat-card stat-highlight">
+      <div class="stat-number">{{ "{:,}".format(total_courses) }}</div>
+      <div class="stat-label">Total Courses</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-number">{{ semesters|length }}</div>
+      <div class="stat-label">Semesters</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-number">{{ type_counts|length }}</div>
+      <div class="stat-label">Course Types</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-number">{{ campus_counts|length }}</div>
+      <div class="stat-label">Campuses</div>
+    </div>
+  </div>
+
+  <div class="stats-grid">
+    <div class="stats-section">
+      <h2>Courses per Semester</h2>
+      <table class="stats-table">
+        <thead>
+          <tr>
+            <th>Semester</th>
+            <th>Key</th>
+            <th>Courses</th>
+            <th>Distribution</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for key, count in semesters %}
+          <tr>
+            <td>{{ format_semester(key) }}</td>
+            <td class="text-muted">{{ key }}</td>
+            <td class="text-right">{{ "{:,}".format(count) }}</td>
+            <td>
+              <div class="bar-container">
+                <div
+                  class="bar"
+                  style="width: {{ (count / (semesters|map(attribute=1)|max if semesters else 1)) * 100 }}%"
+                ></div>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="stats-columns">
+      <div class="stats-section">
+        <h2>Course Types</h2>
+        <table class="stats-table">
+          <thead>
+            <tr>
+              <th>Type</th>
+              <th>Count</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in type_counts[:15] %}
+            <tr>
+              <td><span class="badge badge-type">{{ item.type }}</span></td>
+              <td class="text-right">{{ "{:,}".format(item.count) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="stats-section">
+        <h2>Campuses</h2>
+        <table class="stats-table">
+          <thead>
+            <tr>
+              <th>Campus</th>
+              <th>Count</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in campus_counts %}
+            <tr>
+              <td>{{ item.display }}</td>
+              <td class="text-right">{{ "{:,}".format(item.count) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

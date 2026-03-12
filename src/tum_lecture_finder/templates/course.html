@@ -1,0 +1,138 @@
+{% extends "base.html" %} {% block title %}{{ course.title }} — TUM Lecture
+Finder{% endblock %} {% block content %}
+<meta name="course-id" content="{{ course.course_id }}" />
+<div class="course-detail">
+  <a href="javascript:void(0)" class="back-link" id="back-to-search"
+    >&larr; Back to search</a
+  >
+
+  <div class="course-header">
+    <div class="course-badges">
+      {% if course.course_type %}
+      <span class="badge badge-type">{{ course.course_type }}</span>
+      {% endif %} {% if course.semester_display %}
+      <span class="badge badge-semester">{{ course.semester_display }}</span>
+      {% endif %} {% if course.campus_display %}
+      <span class="badge badge-campus">{{ course.campus_display }}</span>
+      {% endif %} {% if course.language %}
+      <span class="badge badge-lang">{{ course.language }}</span>
+      {% endif %}
+    </div>
+    <h1 class="course-title">{{ course.title_de }}</h1>
+    {% if course.title_en and course.title_en != course.title_de %}
+    <h2 class="course-title-en">{{ course.title_en }}</h2>
+    {% endif %}
+  </div>
+
+  <div class="course-actions-top">
+    <a
+      href="https://campus.tum.de/tumonline/ee/ui/ca2/app/desktop/#/slc.tm.cp/student/courses/{{ course.course_id }}"
+      target="_blank"
+      rel="noopener noreferrer"
+      class="btn btn-primary"
+    >
+      View on TUMonline &nearr;
+    </a>
+  </div>
+
+  <div class="course-meta-grid">
+    <div class="meta-card">
+      <div class="meta-label">Course ID</div>
+      <div class="meta-value">{{ course.course_id }}</div>
+    </div>
+    {% if course.course_number %}
+    <div class="meta-card">
+      <div class="meta-label">Course Code</div>
+      <div class="meta-value">{{ course.course_number }}</div>
+    </div>
+    {% endif %} {% if course.sws %}
+    <div class="meta-card">
+      <div class="meta-label">SWS</div>
+      <div class="meta-value">{{ course.sws }}</div>
+    </div>
+    {% endif %} {% if course.language %}
+    <div class="meta-card">
+      <div class="meta-label">Language</div>
+      <div class="meta-value">{{ course.language }}</div>
+    </div>
+    {% endif %} {% if course.campus_display %}
+    <div class="meta-card">
+      <div class="meta-label">Campus</div>
+      <div class="meta-value">{{ course.campus_display }}</div>
+    </div>
+    {% endif %}
+  </div>
+
+  {% if other_semesters %}
+  <div class="course-section">
+    <h3 class="section-title">Also offered in</h3>
+    <div class="other-semesters">
+      {% for s in other_semesters %}
+      <a href="/course/{{ s.course_id }}" class="semester-link"
+        >{{ s.semester_display }}</a
+      >
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <div id="schedule-section" class="course-section hidden">
+    <h3 class="section-title">Schedule &amp; Rooms</h3>
+    <div id="schedule-content" class="schedule-loading">Loading schedule…</div>
+  </div>
+
+  {% if course.organisation %}
+  <div class="course-section">
+    <h3 class="section-title">Organisation</h3>
+    <p>{{ course.organisation }}</p>
+  </div>
+  {% endif %} {% if course.instructors %}
+  <div class="course-section">
+    <h3 class="section-title">Instructors</h3>
+    <p>{{ course.instructors }}</p>
+  </div>
+  {% endif %} {% if course.content_de or course.content_en %}
+  <div class="course-section">
+    <h3 class="section-title">Content</h3>
+    {% if course.content_de %}
+    <div class="desc-block">
+      {% if course.content_en %}<span class="lang-tag">DE</span>{% endif %}
+      <div class="desc-text">{{ course.content_de }}</div>
+    </div>
+    {% endif %} {% if course.content_en %}
+    <div class="desc-block">
+      {% if course.content_de %}<span class="lang-tag">EN</span>{% endif %}
+      <div class="desc-text">{{ course.content_en }}</div>
+    </div>
+    {% endif %}
+  </div>
+  {% endif %} {% if course.objectives_de or course.objectives_en %}
+  <div class="course-section">
+    <h3 class="section-title">Learning Objectives</h3>
+    {% if course.objectives_de %}
+    <div class="desc-block">
+      {% if course.objectives_en %}<span class="lang-tag">DE</span>{% endif %}
+      <div class="desc-text">{{ course.objectives_de }}</div>
+    </div>
+    {% endif %} {% if course.objectives_en %}
+    <div class="desc-block">
+      {% if course.objectives_de %}<span class="lang-tag">EN</span>{% endif %}
+      <div class="desc-text">{{ course.objectives_en }}</div>
+    </div>
+    {% endif %}
+  </div>
+  {% endif %} {% if course.prerequisites %}
+  <div class="course-section">
+    <h3 class="section-title">Prerequisites</h3>
+    <div class="desc-text">{{ course.prerequisites }}</div>
+  </div>
+  {% endif %} {% if course.literature %}
+  <div class="course-section">
+    <h3 class="section-title">Literature</h3>
+    <div class="desc-text">{{ course.literature }}</div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %} {% block scripts %}
+<script src="/static/course.js"></script>
+{% endblock %}
