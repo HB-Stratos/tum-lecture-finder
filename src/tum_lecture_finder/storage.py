@@ -6,6 +6,7 @@ import sqlite3
 from typing import TYPE_CHECKING
 
 from tum_lecture_finder.config import BM25_WEIGHTS, DATA_DIR, DB_PATH
+from tum_lecture_finder.models import Course
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -14,13 +15,11 @@ if TYPE_CHECKING:
     import numpy as np
     from numpy.typing import NDArray
 
-    from tum_lecture_finder.models import Course
-
 # Embeddings are stored alongside the database as a compact numpy file.
 EMBEDDINGS_PATH = DATA_DIR / "embeddings.npz"
 
 # ── SQL statements ─────────────────────────────────────────────────────────
-_SCHEMA_VERSION = 5  # bump when schema changes
+_SCHEMA_VERSION = 7  # bump when schema changes
 
 _CREATE_META = """\
 CREATE TABLE IF NOT EXISTS meta (
@@ -48,7 +47,15 @@ CREATE TABLE IF NOT EXISTS courses (
     objectives_de  TEXT    NOT NULL DEFAULT '',
     objectives_en  TEXT    NOT NULL DEFAULT '',
     prerequisites  TEXT    NOT NULL DEFAULT '',
-    literature     TEXT    NOT NULL DEFAULT ''
+    literature     TEXT    NOT NULL DEFAULT '',
+    other_semesters    TEXT    NOT NULL DEFAULT ''
+);
+"""
+
+_CREATE_BUILDING_CACHE = """\
+CREATE TABLE IF NOT EXISTS building_campuses (
+    building_code TEXT PRIMARY KEY,
+    campus        TEXT NOT NULL DEFAULT ''
 );
 """
 
@@ -172,6 +179,36 @@ def _dict_from_course(c: Course) -> dict[str, object]:
     return asdict(c)
 
 
+def row_to_course(row: sqlite3.Row) -> Course:
+    """Convert a ``sqlite3.Row`` to a :class:`Course`.
+
+    Filters out non-model columns (e.g. ``score`` from FTS queries).
+
+    Args:
+        row: A sqlite3.Row with column-name access.
+
+    Returns:
+        A Course dataclass instance.
+
+    """
+    keys = row.keys()
+    return Course(**{k: row[k] for k in keys if k not in {"score", "other_semesters"}})
+
+
+def parse_other_semesters(row: sqlite3.Row) -> list[str]:
+    """Extract the pre-computed other_semesters list from a database row.
+
+    Args:
+        row: A sqlite3.Row that may contain an ``other_semesters`` column.
+
+    Returns:
+        List of semester keys (e.g. ``["25W", "24W"]``), or empty list.
+
+    """
+    csv: str = row["other_semesters"] if "other_semesters" in dict(row) else ""
+    return [s for s in csv.split(",") if s]
+
+
 class CourseStore:
     """SQLite-backed course store with FTS5 full-text index.
 
@@ -180,10 +217,21 @@ class CourseStore:
 
     """
 
-    def __init__(self, db_path: Path = DB_PATH) -> None:
-        """Initialise the store, creating the schema if necessary."""
+    def __init__(
+        self,
+        db_path: Path = DB_PATH,
+        *,
+        check_same_thread: bool = True,
+    ) -> None:
+        """Initialise the store, creating the schema if necessary.
+
+        Args:
+            db_path: Path to the SQLite database file.
+            check_same_thread: If False, allow cross-thread access (for web servers).
+
+        """
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(db_path)
+        self._conn = sqlite3.connect(db_path, check_same_thread=check_same_thread)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL;")
         self._conn.execute("PRAGMA foreign_keys=ON;")
@@ -213,6 +261,7 @@ class CourseStore:
 
         cur = self._conn.cursor()
         cur.executescript(_CREATE_COURSES)
+        cur.executescript(_CREATE_BUILDING_CACHE)
         cur.executescript(_CREATE_FTS)
         cur.executescript(_FTS_TRIGGERS)
         self._conn.commit()
@@ -317,9 +366,108 @@ class CourseStore:
         ).fetchall()
         return [(r["semester_key"], r["cnt"]) for r in rows]
 
+    def get_other_semesters(
+        self,
+        identity_code_id: int,
+        exclude_course_id: int,
+    ) -> list[tuple[int, str]]:
+        """Find other semester offerings of a course.
+
+        Args:
+            identity_code_id: The identity linking the same course across semesters.
+            exclude_course_id: Course id to exclude (the one being viewed).
+
+        Returns:
+            List of ``(course_id, semester_key)`` tuples, most recent first.
+
+        """
+        rows = self._conn.execute(
+            "SELECT course_id, semester_key FROM courses "
+            "WHERE identity_code_id = ? AND course_id != ? "
+            "ORDER BY semester_key DESC",
+            (identity_code_id, exclude_course_id),
+        ).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    def compute_other_semesters(self) -> None:
+        """Populate the ``other_semesters`` column for every course.
+
+        For each course, stores a comma-separated list of semester keys from
+        other offerings that share the same ``identity_code_id``, sorted
+        descending (most recent first).  Runs in a single UPDATE statement.
+
+        """
+        self._conn.execute(
+            "UPDATE courses SET other_semesters = COALESCE("
+            "  (SELECT GROUP_CONCAT(sk, ',') FROM ("
+            "    SELECT DISTINCT c2.semester_key AS sk"
+            "    FROM courses c2"
+            "    WHERE c2.identity_code_id = courses.identity_code_id"
+            "      AND c2.course_id != courses.course_id"
+            "      AND c2.identity_code_id != 0"
+            "    ORDER BY sk DESC"
+            "  )), '')"
+        )
+        self._conn.commit()
+
+    def type_counts(self) -> list[tuple[str, int]]:
+        """Return course type distribution.
+
+        Returns:
+            List of ``(type_key, count)`` pairs sorted by count descending.
+
+        """
+        rows = self._conn.execute(
+            "SELECT course_type, COUNT(*) AS cnt "
+            "FROM courses WHERE course_type != '' "
+            "GROUP BY course_type ORDER BY cnt DESC",
+        ).fetchall()
+        return [(r["course_type"], r["cnt"]) for r in rows]
+
+    def campus_counts(self) -> list[tuple[str, int]]:
+        """Return campus distribution.
+
+        Returns:
+            List of ``(campus, count)`` pairs sorted by count descending.
+
+        """
+        rows = self._conn.execute(
+            "SELECT campus, COUNT(*) AS cnt "
+            "FROM courses WHERE campus != '' "
+            "GROUP BY campus ORDER BY cnt DESC",
+        ).fetchall()
+        return [(r["campus"], r["cnt"]) for r in rows]
+
     def close(self) -> None:
         """Close the database connection."""
         self._conn.close()
+
+    # ── building cache ─────────────────────────────────────────────────
+    def get_building_cache(self) -> dict[str, str]:
+        """Return the cached building-code → campus mapping.
+
+        Returns:
+            Dict mapping 4-digit building codes to campus labels.
+
+        """
+        rows = self._conn.execute("SELECT building_code, campus FROM building_campuses").fetchall()
+        return {r["building_code"]: r["campus"] for r in rows}
+
+    def upsert_building_cache(self, mapping: dict[str, str]) -> None:
+        """Insert or update building-code → campus entries.
+
+        Args:
+            mapping: Dict of building_code → campus label.
+
+        """
+        if not mapping:
+            return
+        self._conn.executemany(
+            "INSERT INTO building_campuses (building_code, campus) VALUES (?, ?) "
+            "ON CONFLICT(building_code) DO UPDATE SET campus = excluded.campus",
+            list(mapping.items()),
+        )
+        self._conn.commit()
 
     # ── embeddings cache ───────────────────────────────────────────────
     def save_embeddings(
@@ -337,18 +485,29 @@ class CourseStore:
         import numpy as np  # noqa: PLC0415
 
         np.savez_compressed(EMBEDDINGS_PATH, ids=course_ids, emb=embeddings)
+        CourseStore.invalidate_embeddings_cache()
 
-    @staticmethod
-    def load_embeddings() -> tuple[NDArray[np.int64], NDArray[np.float32]] | None:
-        """Load cached embeddings from disk.
+    _embeddings_cache: tuple[NDArray[np.int64], NDArray[np.float32]] | None = None
+
+    @classmethod
+    def load_embeddings(cls) -> tuple[NDArray[np.int64], NDArray[np.float32]] | None:
+        """Load cached embeddings from disk (memoized after first load).
 
         Returns:
             ``(course_ids, embeddings)`` or ``None`` if not cached.
 
         """
+        if cls._embeddings_cache is not None:
+            return cls._embeddings_cache
         if not EMBEDDINGS_PATH.exists():
             return None
         import numpy as np  # noqa: PLC0415
 
         data = np.load(EMBEDDINGS_PATH)
-        return data["ids"], data["emb"]
+        cls._embeddings_cache = (data["ids"], data["emb"])
+        return cls._embeddings_cache
+
+    @classmethod
+    def invalidate_embeddings_cache(cls) -> None:
+        """Clear the in-memory embeddings cache (call after re-encoding)."""
+        cls._embeddings_cache = None

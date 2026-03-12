@@ -6,8 +6,8 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
-from tum_lecture_finder.config import CAMPUS_KEYWORDS
 from tum_lecture_finder.models import Course, SearchResult
+from tum_lecture_finder.storage import parse_other_semesters, row_to_course
 
 if TYPE_CHECKING:
     from tum_lecture_finder.storage import CourseStore
@@ -17,11 +17,17 @@ log = logging.getLogger(__name__)
 _SNIPPET_MAX_LEN = 120  # max chars for a description excerpt
 
 
-def _dedup_by_identity(results: list[SearchResult]) -> list[SearchResult]:
+def _dedup_by_identity(
+    results: list[SearchResult],
+) -> list[SearchResult]:
     """Deduplicate results that share the same ``identity_code_id``.
 
     When multiple semesters of the same course appear in results, keep only the
-    highest-scoring entry and annotate it with the other semester keys.
+    highest-scoring entry and annotate it with the other semester keys.  The
+    most recent semester is always preferred as the displayed course.
+
+    Each result's ``other_semesters`` list (pre-populated from the database)
+    is merged so the final entry contains all known semesters.
 
     Args:
         results: Sorted search results (best first).
@@ -36,11 +42,26 @@ def _dedup_by_identity(results: list[SearchResult]) -> list[SearchResult]:
     for r in results:
         iid = r.course.identity_code_id
         if iid and iid in seen:
-            # Add this semester to the existing entry
             existing = output[seen[iid]]
-            sem = r.course.semester_key
-            if sem and sem not in existing.other_semesters:
-                existing.other_semesters.append(sem)
+            new_sem = r.course.semester_key
+            old_sem = existing.course.semester_key
+            # Merge other_semesters from the incoming result
+            for s in r.other_semesters:
+                if s and s not in existing.other_semesters:
+                    existing.other_semesters.append(s)
+            # Prefer the more recent semester as the displayed course
+            if new_sem and old_sem and new_sem > old_sem:
+                if old_sem not in existing.other_semesters:
+                    existing.other_semesters.append(old_sem)
+                existing.course = r.course
+            elif new_sem and new_sem != old_sem and new_sem not in existing.other_semesters:
+                existing.other_semesters.append(new_sem)
+            # Remove the displayed semester from other_semesters
+            displayed = existing.course.semester_key
+            existing.other_semesters = [
+                s for s in existing.other_semesters if s != displayed
+            ]
+            existing.other_semesters.sort(reverse=True)
             continue
         idx = len(output)
         if iid:
@@ -48,20 +69,6 @@ def _dedup_by_identity(results: list[SearchResult]) -> list[SearchResult]:
         output.append(r)
 
     return output
-
-
-def _row_to_course(row: object) -> Course:
-    """Convert a sqlite3.Row to a :class:`Course`.
-
-    Args:
-        row: A sqlite3.Row with column-name access.
-
-    Returns:
-        A Course dataclass instance.
-
-    """
-    keys = row.keys()  # type: ignore[union-attr]
-    return Course(**{k: row[k] for k in keys if k != "score"})
 
 
 def _escape_fts_query(query: str) -> str:
@@ -163,8 +170,8 @@ def _generate_snippet(course: Course, query: str) -> str:
 def _matches_campus(course: Course, campus: str) -> bool:
     """Check whether a course matches a campus filter.
 
-    Uses the ``campus`` field (derived from room building codes) when
-    available, falling back to keyword matching against the organisation name.
+    Uses substring matching against the ``campus`` field so that e.g.
+    ``"garching"`` matches ``"garching"``, ``"garching-hochbrück"``, etc.
 
     Args:
         course: The course to check.
@@ -174,14 +181,9 @@ def _matches_campus(course: Course, campus: str) -> bool:
         True if the course belongs to the given campus.
 
     """
-    campus_lower = campus.lower()
-    # Prefer the precise building-code-derived campus field
-    if course.campus:
-        return course.campus == campus_lower
-    # Fallback to organisation keyword matching
-    keywords = CAMPUS_KEYWORDS.get(campus_lower, [campus_lower])
-    org_lower = course.organisation.lower()
-    return any(kw in org_lower for kw in keywords)
+    if not course.campus:
+        return False
+    return campus.lower() in course.campus
 
 
 def fulltext_search(
@@ -214,11 +216,18 @@ def fulltext_search(
 
     results: list[SearchResult] = []
     for row, score in rows:
-        course = _row_to_course(row)
+        course = row_to_course(row)
         if campus and not _matches_campus(course, campus):
             continue
         snippet = _generate_snippet(course, query)
-        results.append(SearchResult(course=course, score=-score, snippet=snippet))
+        results.append(
+            SearchResult(
+                course=course,
+                score=-score,
+                snippet=snippet,
+                other_semesters=parse_other_semesters(row),
+            )
+        )
 
     results = _dedup_by_identity(results)
     return results[:limit]
@@ -227,6 +236,38 @@ def fulltext_search(
 # ── Semantic search ────────────────────────────────────────────────────────
 
 _model = None  # lazy-loaded sentence-transformers model
+
+# ── Cached course data for semantic search ─────────────────────────────────
+_course_cache: tuple[list[Course], dict[int, list[str]]] | None = None
+
+
+def _load_course_data(
+    store: CourseStore,
+) -> tuple[list[Course], dict[int, list[str]]]:
+    """Load and cache courses + other_semesters for semantic search.
+
+    Returns:
+        Tuple of (courses, course_id → other_semesters mapping).
+
+    """
+    global _course_cache  # noqa: PLW0603
+    if _course_cache is not None:
+        return _course_cache
+    all_rows = store.get_all_courses()
+    courses = []
+    other_sems: dict[int, list[str]] = {}
+    for r in all_rows:
+        c = row_to_course(r)
+        courses.append(c)
+        other_sems[c.course_id] = parse_other_semesters(r)
+    _course_cache = (courses, other_sems)
+    return _course_cache
+
+
+def invalidate_course_cache() -> None:
+    """Clear the in-memory course cache (call after database updates)."""
+    global _course_cache  # noqa: PLW0603
+    _course_cache = None
 
 
 def _get_model() -> object:
@@ -261,11 +302,9 @@ def build_embeddings(
     model = _get_model()
 
     all_rows = store.get_all_courses()
-    courses = [_row_to_course(r) for r in all_rows]
+    courses = [row_to_course(r) for r in all_rows]
     if not courses:
         return 0
-
-    texts = [c.embedding_text for c in courses]
 
     texts = [c.embedding_text for c in courses]
     course_ids = np.array([c.course_id for c in courses], dtype=np.int64)
@@ -302,9 +341,8 @@ def semantic_search(
 
     model = _get_model()
 
-    # Load all courses (needed for metadata regardless)
-    all_rows = store.get_all_courses()
-    all_courses = [_row_to_course(r) for r in all_rows]
+    # Load all courses (needed for metadata regardless) — cached after first call
+    all_courses, all_other_sems = _load_course_data(store)
     if not all_courses:
         return []
 
@@ -328,7 +366,9 @@ def semantic_search(
         courses = all_courses
         texts = [c.embedding_text for c in courses]
         corpus_embeddings = model.encode(
-            texts, normalize_embeddings=True, show_progress_bar=False,
+            texts,
+            normalize_embeddings=True,
+            show_progress_bar=False,
         )
 
     # Apply filters after loading embeddings (so indices stay aligned)
@@ -341,7 +381,7 @@ def semantic_search(
             if campus and not _matches_campus(c, campus):
                 keep = False
             mask.append(keep)
-        mask_arr = np.array(mask)
+        mask_arr = np.array(mask, dtype=np.bool_)
         courses = [c for c, m in zip(courses, mask, strict=True) if m]
         corpus_embeddings = corpus_embeddings[mask_arr]
 
@@ -359,6 +399,7 @@ def semantic_search(
             course=courses[i],
             score=float(similarities[i]),
             snippet=_generate_snippet(courses[i], query),
+            other_semesters=all_other_sems.get(courses[i].course_id, []),
         )
         for i in top_indices
         if similarities[i] > min_score
@@ -419,14 +460,18 @@ def hybrid_search(  # noqa: PLR0913
     # Merge
     all_courses: dict[int, Course] = {}
     snippets: dict[int, str] = {}
+    other_sems: dict[int, list[str]] = {}
     for r in fts_results:
         all_courses[r.course.course_id] = r.course
         if r.snippet:
             snippets[r.course.course_id] = r.snippet
+        other_sems[r.course.course_id] = r.other_semesters
     for r in sem_results:
         all_courses[r.course.course_id] = r.course
         if r.snippet and r.course.course_id not in snippets:
             snippets[r.course.course_id] = r.snippet
+        if r.course.course_id not in other_sems:
+            other_sems[r.course.course_id] = r.other_semesters
 
     combined: list[SearchResult] = []
     fts_weight = 1.0 - semantic_weight
@@ -434,7 +479,12 @@ def hybrid_search(  # noqa: PLR0913
         fts_s = fts_scores.get(cid, 0.0) * fts_weight
         sem_s = sem_scores.get(cid, 0.0) * semantic_weight
         combined.append(
-            SearchResult(course=course, score=fts_s + sem_s, snippet=snippets.get(cid, ""))
+            SearchResult(
+                course=course,
+                score=fts_s + sem_s,
+                snippet=snippets.get(cid, ""),
+                other_semesters=other_sems.get(cid, []),
+            )
         )
 
     combined.sort(key=lambda r: r.score, reverse=True)

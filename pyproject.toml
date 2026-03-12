@@ -8,6 +8,10 @@ dependencies = [
     "rich>=13.0",
     "click>=8.1",
     "sentence-transformers>=3.0",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "jinja2>=3.1",
+    "slowapi>=0.1.9",
 ]
 
 [project.scripts]
@@ -27,7 +31,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["S101", "D", "ANN", "PLR2004"]
+"tests/*" = ["S101", "D", "ANN", "PLR2004", "PLC0415", "SLF001", "ARG001", "ARG002"]
 "src/tum_lecture_finder/storage.py" = ["S608"]  # SQL clauses are hardcoded, not user input
 "src/tum_lecture_finder/cli.py" = ["D301"]  # Click uses \b (backspace) in docstrings
 

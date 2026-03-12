@@ -7,6 +7,7 @@ import logging
 import os
 import sys
 import warnings
+from pathlib import Path
 
 import click
 from rich.console import Console
@@ -114,6 +115,9 @@ def update(
 
     store = CourseStore()
 
+    # Load cached building-code → campus mappings
+    building_cache = store.get_building_cache()
+
     # Resolve which semesters to fetch
     semester_ids: list[int] | None = None
     if semesters:
@@ -166,6 +170,7 @@ def update(
             fetch_courses(
                 semester_ids=semester_ids,
                 concurrency=concurrency,
+                building_cache=building_cache,
                 on_list_progress=_on_list,
                 on_detail_progress=_on_detail,
                 on_semester=_on_semester,
@@ -176,6 +181,8 @@ def update(
         semesters_found = {c.semester_key for c in courses}
         sem_label = ", ".join(sorted(semesters_found))
         count = store.upsert_courses(courses)
+        store.compute_other_semesters()
+        store.upsert_building_cache(building_cache)
         console.print(
             f"\n[green]Done.[/green] {count} courses stored"
             f" ({len(semesters_found)} semesters: [cyan]{sem_label}[/cyan])."
@@ -183,7 +190,7 @@ def update(
 
         # Rebuild semantic search embeddings
         console.print("[dim]Rebuilding semantic search index…[/dim]")
-        with _quiet_model_load():
+        with _QuietModelLoad():
             from tum_lecture_finder.search import build_embeddings  # noqa: PLC0415
 
             build_embeddings(store)
@@ -214,8 +221,9 @@ def update(
     "--campus",
     default=None,
     help=(
-        "Filter by campus.  Inferred from the responsible department name.  "
-        "Values: garching, muenchen, freising, straubing, heilbronn, singapore."
+        "Filter by campus (substring match against campus labels "
+        "resolved from building codes via NavigaTUM).  "
+        "Examples: garching, stammgelände, weihenstephan, heilbronn, straubing."
     ),
 )
 @click.option(
@@ -228,12 +236,12 @@ def update(
 @click.option(
     "--mode",
     "-m",
-    type=click.Choice(["fts", "semantic", "hybrid"], case_sensitive=False),
-    default="fts",
+    type=click.Choice(["keyword", "semantic", "hybrid"], case_sensitive=False),
+    default="keyword",
     show_default=True,
     help=(
         "Search strategy.  "
-        "'fts' uses SQLite full-text search (fast, exact keyword matching).  "
+        "'keyword' uses SQLite full-text search (fast, exact keyword matching).  "
         "'semantic' uses a neural language model for meaning-based matching "
         "(handles synonyms, typos, related concepts; slower on first run "
         "while the model downloads).  "
@@ -255,7 +263,7 @@ def search(
     \b
     Examples:
       tlf search "machine learning"
-      tlf search "Regelungstechnik" --mode fts
+      tlf search "Regelungstechnik" --mode keyword
       tlf search "PCB design" --campus garching --type PR
     """
     from tum_lecture_finder.search import (  # noqa: PLC0415
@@ -271,7 +279,7 @@ def search(
         store.close()
         sys.exit(1)
 
-    if mode == "fts":
+    if mode == "keyword":
         results = fulltext_search(
             store,
             query,
@@ -280,7 +288,7 @@ def search(
             limit=limit,
         )
     elif mode == "semantic":
-        with _quiet_model_load():
+        with _QuietModelLoad():
             results = semantic_search(
                 store,
                 query,
@@ -289,7 +297,7 @@ def search(
                 limit=limit,
             )
     else:
-        with _quiet_model_load():
+        with _QuietModelLoad():
             results = hybrid_search(
                 store,
                 query,
@@ -307,7 +315,7 @@ def search(
     _print_results(results)
 
 
-class _quiet_model_load:  # noqa: N801
+class _QuietModelLoad:
     """Context manager that suppresses noisy HuggingFace / torch / safetensors output."""
 
     def __enter__(self) -> None:
@@ -342,7 +350,7 @@ class _quiet_model_load:  # noqa: N801
         # the original sys.stdout so its output still works.
         self._real_stderr = sys.stderr
         self._real_stdout = sys.stdout
-        self._devnull = open(os.devnull, "w")  # noqa: PTH123
+        self._devnull = Path(os.devnull).open("w")
         sys.stderr = self._devnull
         sys.stdout = self._devnull
 
@@ -426,9 +434,9 @@ def info(course_id: int) -> None:
         console.print(f"[red]Course {course_id} not found in local database.[/red]")
         sys.exit(1)
 
-    from tum_lecture_finder.search import _row_to_course  # noqa: PLC0415
+    from tum_lecture_finder.storage import row_to_course  # noqa: PLC0415
 
-    c = _row_to_course(row)
+    c = row_to_course(row)
 
     console.print(f"\n[bold cyan]{c.title_de}[/bold cyan]")
     if c.title_en and c.title_en != c.title_de:
@@ -516,10 +524,47 @@ def build_index() -> None:
 
     console.print(f"[bold]Encoding {total} courses…[/bold]")
 
-    with _quiet_model_load():
+    with _QuietModelLoad():
         from tum_lecture_finder.search import build_embeddings  # noqa: PLC0415
 
         n = build_embeddings(store)
 
     console.print(f"[green]Done.[/green] Cached embeddings for {n} courses.")
     store.close()
+
+
+# ── serve ──────────────────────────────────────────────────────────────────
+
+
+@main.command()
+@click.option("--host", "-h", default="127.0.0.1", show_default=True, help="Bind address.")
+@click.option("--port", "-p", default=8000, show_default=True, help="Listen port.")
+def serve(host: str, port: int) -> None:
+    """Start the web UI server.
+
+    \b
+    Launches a local web server that provides a browser-based search
+    interface for the course database.
+
+    \b
+    Examples:
+      tlf serve                   # http://127.0.0.1:8000
+      tlf serve -p 3000           # custom port
+      tlf serve -h 0.0.0.0       # listen on all interfaces
+    """
+    store = CourseStore()
+    total = store.course_count()
+    store.close()
+
+    if total == 0:
+        console.print("[yellow]No courses stored. Run [bold]tlf update[/bold] first.[/yellow]")
+        sys.exit(1)
+
+    console.print("[bold]Starting web server…[/bold]")
+    console.print(f"  [cyan]http://{host}:{port}[/cyan]")
+    console.print(f"  {total} courses available")
+    console.print("[dim]Press Ctrl+C to stop.[/dim]\n")
+
+    from tum_lecture_finder.web import run_server  # noqa: PLC0415
+
+    run_server(host=host, port=port)

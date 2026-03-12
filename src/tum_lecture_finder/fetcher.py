@@ -11,10 +11,10 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from tum_lecture_finder.config import (
-    BUILDING_PREFIX_CAMPUS,
     COURSE_GROUPS_URL,
     COURSES_URL,
     DEFAULT_RECENT_SEMESTERS,
+    NAV_API_SEARCH_URL,
     PAGE_SIZE,
     SEMESTERS_URL,
 )
@@ -197,33 +197,126 @@ def _merge_detail(course: Course, detail: dict[str, Any]) -> Course:
 _BUILDING_CODE_RE = re.compile(r"\((\d{4})\.\w+\.\w+\)")
 
 
-def _campus_from_rooms(groups_data: dict[str, Any]) -> str:
-    """Detect the campus from building codes in course group appointment data.
+def _extract_building_codes(groups_data: dict[str, Any]) -> list[str]:
+    """Extract unique 4-digit building codes from course group appointment data.
 
-    Extracts 4-digit building codes from ``resourceName`` fields
-    (e.g. ``"Hörsaal (8120.EG.001)"`` → building ``8120`` → Garching)
-    and returns the most common campus across all appointments.
+    Scans ``resourceName`` fields for room identifiers like
+    ``"Hörsaal (8120.EG.001)"`` and returns the set of building codes found.
 
     Args:
         groups_data: JSON response from the ``courseGroups/firstGroups`` endpoint.
 
     Returns:
-        Campus name (e.g. ``"garching"``) or ``""`` if no rooms are found.
+        List of unique 4-digit building code strings.
 
     """
-    campus_counts: dict[str, int] = {}
+    codes: set[str] = set()
     for group in groups_data.get("courseGroupDtos", []):
         for apt in group.get("appointmentDtos", []):
             resource_name = apt.get("resourceName", "")
             match = _BUILDING_CODE_RE.search(resource_name)
             if match:
-                prefix = match.group(1)[0]
-                campus = BUILDING_PREFIX_CAMPUS.get(prefix, "")
-                if campus:
-                    campus_counts[campus] = campus_counts.get(campus, 0) + 1
-    if not campus_counts:
+                codes.add(match.group(1))
+    return sorted(codes)
+
+
+def _parse_campus_from_subtext(subtext: str) -> str:
+    """Parse a campus label from a TUM NavigaTUM room subtext.
+
+    Room subtexts follow the format ``"campus-label, Building Name"`` where
+    campus labels are always lowercase (e.g. ``"garching"``,
+    ``"stammgelände"``).  Non-standard locations like
+    ``"Garmisch-Partenkirchen"`` start with an uppercase letter.
+
+    Args:
+        subtext: The ``subtext`` field from a NavigaTUM room search result.
+
+    Returns:
+        The campus label (lowercase), or ``""`` if unparseable.
+
+    """
+    if not subtext:
         return ""
-    return max(campus_counts, key=campus_counts.get)  # type: ignore[arg-type]
+    parts = subtext.split(", ", 1)
+    if len(parts) == 2 and parts[0] and parts[0][0].islower():  # noqa: PLR2004
+        return parts[0]
+    # Non-standard location: take text before first " (" and lowercase it
+    paren_idx = subtext.find(" (")
+    if paren_idx > 0:
+        return subtext[:paren_idx].lower()
+    return subtext.lower()
+
+
+async def _resolve_building_campus(
+    client: httpx.AsyncClient,
+    building_code: str,
+) -> str:
+    """Look up the campus for a building code via the TUM NavigaTUM API.
+
+    Queries the search endpoint for the building code and extracts the campus
+    label from room result subtexts.
+
+    Args:
+        client: An ``httpx.AsyncClient`` instance.
+        building_code: A 4-digit building code (e.g. ``"5602"``).
+
+    Returns:
+        The campus label (e.g. ``"garching"``) or ``""`` if unknown.
+
+    """
+    try:
+        resp = await client.get(
+            NAV_API_SEARCH_URL,
+            params={"q": building_code},
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPError:
+        log.debug("NavigaTUM lookup failed for building %s", building_code)
+        return ""
+
+    data = resp.json()
+    prefix = building_code + "."
+    for section in data.get("sections", []):
+        if section.get("facet") != "rooms":
+            continue
+        for entry in section.get("entries", []):
+            if entry.get("id", "").startswith(prefix):
+                campus = _parse_campus_from_subtext(entry.get("subtext", ""))
+                if campus:
+                    return campus
+    return ""
+
+
+async def _resolve_all_buildings(
+    client: httpx.AsyncClient,
+    codes: set[str],
+    *,
+    concurrency: int = 5,
+) -> dict[str, str]:
+    """Resolve a batch of building codes to campus labels via NavigaTUM.
+
+    Args:
+        client: An ``httpx.AsyncClient`` instance.
+        codes: Set of 4-digit building codes to resolve.
+        concurrency: Max parallel NavigaTUM requests.
+
+    Returns:
+        Dict mapping building codes to campus labels.
+
+    """
+    if not codes:
+        return {}
+
+    results: dict[str, str] = {}
+    sem = asyncio.Semaphore(concurrency)
+
+    async def _resolve(code: str) -> None:
+        async with sem:
+            results[code] = await _resolve_building_campus(client, code)
+
+    await asyncio.gather(*[_resolve(c) for c in sorted(codes)])
+    return results
 
 
 # ── async fetch pipeline ──────────────────────────────────────────────────
@@ -394,29 +487,37 @@ async def _fetch_details(
     courses: list[Course],
     concurrency: int,
     on_detail_progress: Callable[[int, int], None] | None,
-) -> None:
+) -> dict[int, list[str]]:
     """Fetch course details and room data for all courses concurrently.
 
     Args:
         client: An ``httpx.AsyncClient`` instance.
-        courses: Courses to enrich (mutated in-place).
+        courses: Courses to enrich (mutated in-place with descriptions).
         concurrency: Max parallel requests.
         on_detail_progress: Callback ``(fetched, total)`` for progress.
+
+    Returns:
+        Mapping of course_id → list of building codes extracted from rooms.
 
     """
     total = len(courses)
     sem = asyncio.Semaphore(concurrency)
     done_count = 0
+    course_buildings: dict[int, list[str]] = {}
 
     async def _fetch_and_merge(course: Course) -> None:
         nonlocal done_count
         async with sem:
-            detail_resp = await _fetch_course_detail_raw(client, course.course_id)
-            groups_resp = await _fetch_course_groups_raw(client, course.course_id)
+            detail_resp, groups_resp = await asyncio.gather(
+                _fetch_course_detail_raw(client, course.course_id),
+                _fetch_course_groups_raw(client, course.course_id),
+            )
         if detail_resp:
             _merge_detail(course, detail_resp)
         if groups_resp:
-            course.campus = _campus_from_rooms(groups_resp)
+            codes = _extract_building_codes(groups_resp)
+            if codes:
+                course_buildings[course.course_id] = codes
         done_count += 1
         if on_detail_progress:
             on_detail_progress(done_count, total)
@@ -425,14 +526,64 @@ async def _fetch_details(
         on_detail_progress(0, total)
 
     await asyncio.gather(*[_fetch_and_merge(c) for c in courses])
+    return course_buildings
 
 
-async def fetch_courses(
+async def _assign_campuses(
+    client: httpx.AsyncClient,
+    courses: list[Course],
+    course_buildings: dict[int, list[str]],
+    building_cache: dict[str, str],
+    on_resolve_progress: Callable[[int, int], None] | None,
+) -> None:
+    """Resolve building codes and assign campus labels to courses.
+
+    Unknown building codes are queried via NavigaTUM; results are merged into
+    *building_cache* (mutated in-place).
+
+    Args:
+        client: An ``httpx.AsyncClient`` instance.
+        courses: Courses to update (mutated in-place).
+        course_buildings: Mapping of course_id → building codes.
+        building_cache: Mutable dict of building_code → campus.
+        on_resolve_progress: Callback ``(resolved, total)`` for progress.
+
+    """
+    all_codes = {code for codes in course_buildings.values() for code in codes}
+    unknown_codes = all_codes - set(building_cache.keys())
+
+    if unknown_codes:
+        log.info(
+            "Resolving %d/%d building codes via NavigaTUM…",
+            len(unknown_codes),
+            len(all_codes),
+        )
+        resolved = await _resolve_all_buildings(client, unknown_codes)
+        building_cache.update(resolved)
+        if on_resolve_progress:
+            on_resolve_progress(len(unknown_codes), len(unknown_codes))
+
+    for course in courses:
+        codes = course_buildings.get(course.course_id, [])
+        if not codes:
+            continue
+        campus_counts: dict[str, int] = {}
+        for code in codes:
+            campus = building_cache.get(code, "")
+            if campus:
+                campus_counts[campus] = campus_counts.get(campus, 0) + 1
+        if campus_counts:
+            course.campus = max(campus_counts, key=campus_counts.get)  # type: ignore[arg-type]
+
+
+async def fetch_courses(  # noqa: PLR0913
     *,
     semester_ids: list[int] | None = None,
     concurrency: int = 20,
+    building_cache: dict[str, str] | None = None,
     on_list_progress: Callable[[int, int], None] | None = None,
     on_detail_progress: Callable[[int, int], None] | None = None,
+    on_resolve_progress: Callable[[int, int], None] | None = None,
     on_semester: Callable[[str], None] | None = None,
 ) -> list[Course]:
     """Fetch courses (optionally from multiple semesters) including descriptions.
@@ -441,17 +592,27 @@ async def fetch_courses(
     :data:`DEFAULT_RECENT_SEMESTERS`) are fetched automatically.  Pass an
     explicit list of term ids to override.
 
+    Building codes found in course room data are resolved to campus labels
+    via the TUM NavigaTUM API.  Pass *building_cache* (a mutable dict) to
+    avoid redundant API calls across runs; newly resolved codes are added
+    to it in-place.
+
     Args:
         semester_ids: Numeric term ids to fetch.  ``None`` = auto-detect recent.
         concurrency: Max parallel detail requests.
+        building_cache: Mutable dict of building_code → campus (updated in-place).
         on_list_progress: Callback ``(fetched, total)`` for the list phase.
         on_detail_progress: Callback ``(fetched, total)`` for the detail phase.
+        on_resolve_progress: Callback ``(resolved, total)`` for building resolution.
         on_semester: Callback ``(semester_key)`` fired when a semester list starts.
 
     Returns:
         Fully populated list of :class:`Course` objects.
 
     """
+    if building_cache is None:
+        building_cache = {}
+
     async with httpx.AsyncClient(
         headers={"Accept": "application/json"},
         timeout=httpx.Timeout(30.0),
@@ -495,8 +656,22 @@ async def fetch_courses(
         if on_list_progress:
             on_list_progress(len(courses), len(courses))
 
-        # Phase 2: course details + room/campus data (concurrent)
-        await _fetch_details(client, courses, concurrency, on_detail_progress)
+        # Phase 2: course details + room/building code extraction
+        course_buildings = await _fetch_details(
+            client,
+            courses,
+            concurrency,
+            on_detail_progress,
+        )
+
+        # Phase 3: resolve buildings & assign campuses
+        await _assign_campuses(
+            client,
+            courses,
+            course_buildings,
+            building_cache,
+            on_resolve_progress,
+        )
 
     return courses
 

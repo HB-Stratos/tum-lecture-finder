@@ -14,6 +14,9 @@ SEMESTERS_URL = "https://campus.tum.de/tumonline/ee/rest/slc.lib.tm/semesters/st
 PAGE_SIZE = 100
 DEFAULT_RECENT_SEMESTERS = 4
 
+# ── TUM NavigaTUM API (building → campus resolution) ──────────────────────
+NAV_API_SEARCH_URL = "https://nav.tum.de/api/search"
+
 # ── Semester key helpers ───────────────────────────────────────────────────
 # TUMonline semester keys look like "25W" (winter 25/26) or "25S" (summer 25).
 
@@ -54,84 +57,6 @@ def format_semester(key: str) -> str:
         return f"Winter {year}/{(year + 1) % 100:02d}"
     return f"Summer {year}"
 
-
-# ── TUM campuses (used for filtering) ─────────────────────────────────────
-# Keywords matched case-insensitively against the organisation field.
-CAMPUS_KEYWORDS: dict[str, list[str]] = {
-    "garching": [
-        "garching",
-        "informatik",
-        "maschinenwesen",
-        "physik department",
-        "department physics",
-        "department chemistry",
-        "department mathematics",
-        "elektrotechnik",
-        "department of",
-        "raumfahrt",
-        "aerospace",
-        "spacecraft",
-        "boltzmannstr",
-        "lichtenberg",
-        "walter schottky",
-        "(tum school of computation",
-        "(tum school of engineering",
-        "(tum school of natural sciences",
-    ],
-    "münchen": [
-        "stammgelände",
-        "innenstadt",
-        "munich",
-        "münchen",
-        "arcisstr",
-        "architektur",
-        "bauklimatik",
-        "bauprozess",
-        "hochbau",
-        "städtebau",
-        "landschafts",
-        "kunstgeschichte",
-        "sportwissenschaft",
-        "political",
-        "soziologie",
-        "philosophie",
-        "governance",
-        "school of social",
-    ],
-    "freising": [
-        "weihenstephan",
-        "freising",
-        "brau",
-        "lebensmittel",
-        "ernährung",
-        "agrar",
-        "forst",
-        "landnutzung",
-        "ökologie",
-        "gartenbau",
-        "holzforschung",
-        "life sciences",
-    ],
-    "straubing": ["straubing", "tumcs", "nachwachsende"],
-    "heilbronn": ["heilbronn"],
-    "singapore": ["singapore", "tumcreate"],
-}
-
-# ── TUM building-code → campus mapping ─────────────────────────────────────
-# The first digit of a 4-digit building code reliably identifies the campus.
-# Derived from scanning room data across hundreds of courses.
-BUILDING_PREFIX_CAMPUS: dict[str, str] = {
-    "0": "münchen",
-    "1": "münchen",
-    "2": "münchen",
-    "3": "münchen",
-    "4": "freising",
-    "5": "garching",
-    "6": "garching",
-    "7": "heilbronn",
-    "8": "garching",
-    "9": "other",
-}
 
 # ── BM25 column weights for FTS5 ──────────────────────────────────────────
 # Order must match the column order in the courses_fts virtual table:
