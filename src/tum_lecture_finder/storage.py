@@ -107,7 +107,14 @@ CREATE TRIGGER IF NOT EXISTS courses_ad AFTER DELETE ON courses BEGIN
     );
 END;
 
-CREATE TRIGGER IF NOT EXISTS courses_au AFTER UPDATE ON courses BEGIN
+CREATE TRIGGER IF NOT EXISTS courses_au
+AFTER UPDATE OF
+    course_number, title_de, title_en,
+    content_de, content_en,
+    objectives_de, objectives_en,
+    prerequisites, literature,
+    organisation, instructors
+ON courses BEGIN
     INSERT INTO courses_fts(
         courses_fts, rowid, course_number, title_de, title_en, content_de, content_en,
         objectives_de, objectives_en, prerequisites, literature,
@@ -131,6 +138,10 @@ CREATE TRIGGER IF NOT EXISTS courses_au AFTER UPDATE ON courses BEGIN
         new.organisation, new.instructors
     );
 END;
+"""
+
+_CREATE_IDENTITY_INDEX = """\
+CREATE INDEX IF NOT EXISTS idx_courses_identity ON courses (identity_code_id);
 """
 
 _UPSERT = """\
@@ -263,7 +274,12 @@ class CourseStore:
         cur.executescript(_CREATE_COURSES)
         cur.executescript(_CREATE_BUILDING_CACHE)
         cur.executescript(_CREATE_FTS)
+        # Always drop and recreate the UPDATE trigger so that column-scope
+        # changes (e.g. adding UPDATE OF to skip other_semesters) take effect
+        # on existing databases without a full schema version bump.
+        self._conn.execute("DROP TRIGGER IF EXISTS courses_au")
         cur.executescript(_FTS_TRIGGERS)
+        cur.executescript(_CREATE_IDENTITY_INDEX)
         self._conn.commit()
 
     # ── write ──────────────────────────────────────────────────────────

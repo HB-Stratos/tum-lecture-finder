@@ -10,6 +10,8 @@ from tum_lecture_finder.models import Course, SearchResult
 from tum_lecture_finder.storage import parse_other_semesters, row_to_course
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from tum_lecture_finder.storage import CourseStore
 
 log = logging.getLogger(__name__)
@@ -285,13 +287,30 @@ def _get_model() -> object:
     return _model
 
 
+def ensure_model_loaded() -> None:
+    """Pre-load the sentence-transformer model into memory.
+
+    Calling this before :func:`build_embeddings` lets you warm up the model
+    inside a quiet context (suppressing noisy HuggingFace output) while
+    keeping the encoding step separate so a progress bar can be shown.
+
+    """
+    _get_model()
+
+
 def build_embeddings(
     store: CourseStore,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> int:
     """Pre-compute and cache embeddings for all stored courses.
 
     Args:
         store: The course store.
+        on_progress: Optional callback invoked after each batch as
+            ``on_progress(courses_done, courses_total)``.  When provided,
+            encoding runs in batches of 256 so the caller can show a
+            progress indicator; otherwise a single ``model.encode`` call
+            is made without an external progress bar.
 
     Returns:
         Number of courses embedded.
@@ -308,7 +327,20 @@ def build_embeddings(
 
     texts = [c.embedding_text for c in courses]
     course_ids = np.array([c.course_id for c in courses], dtype=np.int64)
-    embeddings = model.encode(texts, normalize_embeddings=True, show_progress_bar=True)
+
+    if on_progress is not None:
+        batch_size = 256
+        total = len(texts)
+        chunks = []
+        for i in range(0, total, batch_size):
+            batch = texts[i : i + batch_size]
+            chunk = model.encode(batch, normalize_embeddings=True, show_progress_bar=False)
+            chunks.append(chunk)
+            on_progress(min(i + batch_size, total), total)
+        embeddings = np.vstack(chunks)
+    else:
+        embeddings = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
+
     store.save_embeddings(course_ids, embeddings.astype(np.float32))
     return len(courses)
 

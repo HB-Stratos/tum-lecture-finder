@@ -11,7 +11,17 @@ from pathlib import Path
 
 import click
 from rich.console import Console
-from rich.progress import BarColumn, Progress, SpinnerColumn, TaskID, TextColumn
+from rich.panel import Panel
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TaskID,
+    TextColumn,
+    TimeElapsedColumn,
+)
+from rich.rule import Rule
 from rich.table import Table
 
 from tum_lecture_finder.config import (
@@ -21,6 +31,24 @@ from tum_lecture_finder.config import (
 from tum_lecture_finder.storage import CourseStore
 
 console = Console()
+
+
+def _make_progress() -> Progress:
+    """Create a standard Rich progress bar with consistent styling.
+
+    Returns:
+        A Progress instance.
+
+    """
+    return Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        console=console,
+    )
 
 
 @click.group()
@@ -82,7 +110,7 @@ def main() -> None:
     default=False,
     help="Show detailed progress (per-semester counts, timing).",
 )
-def update(
+def update(  # noqa: PLR0915
     concurrency: int,
     semesters: tuple[str, ...],
     recent_n: int | None,
@@ -121,33 +149,26 @@ def update(
     # Resolve which semesters to fetch
     semester_ids: list[int] | None = None
     if semesters:
-        console.print("[bold]Resolving semester ids…[/bold]")
+        console.print("[bold]Resolving semester ids...[/bold]")
         all_sems = asyncio.run(fetch_semester_list())
         semester_ids = resolve_semester_ids(all_sems, list(semesters))
         sem_labels = ", ".join(semesters)
         console.print(f"Fetching semesters: [cyan]{sem_labels}[/cyan]")
     elif recent_n is not None:
-        console.print(f"[bold]Fetching last {recent_n} semesters…[/bold]")
+        console.print(f"[bold]Fetching last {recent_n} semesters...[/bold]")
         all_sems = asyncio.run(fetch_semester_list())
         semester_ids = [s["id"] for s in all_sems[:recent_n]]
         sem_labels = ", ".join(s["key"] for s in all_sems[:recent_n])
         console.print(f"Semesters: [cyan]{sem_labels}[/cyan]")
     else:
         console.print(
-            f"\n[bold]Fetching last {DEFAULT_RECENT_SEMESTERS} semesters from TUMonline…[/bold]"
+            f"\n[bold]Fetching last {DEFAULT_RECENT_SEMESTERS} semesters from TUMonline...[/bold]"
         )
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-        TextColumn("[dim]{task.completed}/{task.total}[/dim]"),
-        console=console,
-    ) as progress:
-        list_task: TaskID = progress.add_task("Course list…", total=100)
+    with _make_progress() as progress:
+        list_task: TaskID = progress.add_task("Course list", total=100)
         detail_task: TaskID = progress.add_task(
-            "Descriptions…",
+            "Descriptions",
             total=None,
             visible=False,
         )
@@ -180,20 +201,36 @@ def update(
     if courses:
         semesters_found = {c.semester_key for c in courses}
         sem_label = ", ".join(sorted(semesters_found))
+
+        console.print("[dim]Saving courses to database...[/dim]")
         count = store.upsert_courses(courses)
+        console.print("[dim]Computing semester cross-references...[/dim]")
         store.compute_other_semesters()
         store.upsert_building_cache(building_cache)
         console.print(
-            f"\n[green]Done.[/green] {count} courses stored"
+            f"[green]Done.[/green] {count} courses stored"
             f" ({len(semesters_found)} semesters: [cyan]{sem_label}[/cyan])."
         )
 
-        # Rebuild semantic search embeddings
-        console.print("[dim]Rebuilding semantic search index…[/dim]")
-        with _QuietModelLoad():
-            from tum_lecture_finder.search import build_embeddings  # noqa: PLC0415
+        # Rebuild semantic search embeddings — load model quietly, then
+        # encode with a visible Rich progress bar.
+        console.print("[dim]Rebuilding semantic search index...[/dim]")
+        with _QuietModelLoad(banner=False):
+            from tum_lecture_finder.search import (  # noqa: PLC0415
+                build_embeddings,
+                ensure_model_loaded,
+            )
 
-            build_embeddings(store)
+            ensure_model_loaded()
+
+        with _make_progress() as emb_progress:
+            emb_task = emb_progress.add_task("Embeddings", total=None)
+
+            def _on_emb(done: int, total: int) -> None:
+                emb_progress.update(emb_task, completed=done, total=total)
+
+            build_embeddings(store, on_progress=_on_emb)
+
         console.print("[green]Semantic index ready.[/green]")
     else:
         console.print("\n[yellow]No courses returned by the API.[/yellow]")
@@ -316,10 +353,21 @@ def search(
 
 
 class _QuietModelLoad:
-    """Context manager that suppresses noisy HuggingFace / torch / safetensors output."""
+    """Context manager that suppresses noisy HuggingFace / torch / safetensors output.
+
+    Args:
+        banner: If ``True`` (default), print a status message on entry.
+
+    """
+
+    def __init__(self, *, banner: bool = True) -> None:
+        self._banner = banner
 
     def __enter__(self) -> None:
-        console.print("[dim]Preparing language model (cached locally)…[/dim]", highlight=False)
+        if self._banner:
+            console.print(
+                "[dim]Preparing language model (cached locally)...[/dim]", highlight=False
+            )
 
         # Save previous env state
         self._env_keys = [
@@ -393,7 +441,7 @@ def _print_results(results: list) -> None:
         # If the search matched description rather than title, show a snippet
         display_title = title
         if r.snippet:
-            display_title = f"{title}\n[dim italic]…{r.snippet}…[/dim italic]"
+            display_title = f"{title}\n[dim italic]...{r.snippet}...[/dim italic]"
         if r.other_semesters:
             also = ", ".join(sorted(r.other_semesters))
             display_title += f"\n[dim]Also: {also}[/dim]"
@@ -438,10 +486,11 @@ def info(course_id: int) -> None:
 
     c = row_to_course(row)
 
-    console.print(f"\n[bold cyan]{c.title_de}[/bold cyan]")
+    # Title header
+    title = c.title_de
     if c.title_en and c.title_en != c.title_de:
-        console.print(f"[italic]{c.title_en}[/italic]")
-    console.print()
+        title += f"\n[italic]{c.title_en}[/italic]"
+    console.print(Panel(title, style="cyan", expand=False))
 
     info_table = Table(show_header=False, box=None, pad_edge=False)
     info_table.add_column("Key", style="bold", width=16)
@@ -459,24 +508,19 @@ def info(course_id: int) -> None:
         info_table.add_row("Identity Code", str(c.identity_code_id))
     console.print(info_table)
 
-    if c.content_de:
-        console.print("\n[bold]Content (DE):[/bold]")
-        console.print(c.content_de)
-    if c.content_en:
-        console.print("\n[bold]Content (EN):[/bold]")
-        console.print(c.content_en)
-    if c.objectives_de:
-        console.print("\n[bold]Objectives (DE):[/bold]")
-        console.print(c.objectives_de)
-    if c.objectives_en:
-        console.print("\n[bold]Objectives (EN):[/bold]")
-        console.print(c.objectives_en)
-    if c.prerequisites:
-        console.print("\n[bold]Prerequisites:[/bold]")
-        console.print(c.prerequisites)
-    if c.literature:
-        console.print("\n[bold]Literature:[/bold]")
-        console.print(c.literature)
+    # Description sections
+    sections: list[tuple[str, str]] = [
+        ("Content (DE)", c.content_de),
+        ("Content (EN)", c.content_en),
+        ("Objectives (DE)", c.objectives_de),
+        ("Objectives (EN)", c.objectives_en),
+        ("Prerequisites", c.prerequisites),
+        ("Literature", c.literature),
+    ]
+    for heading, text in sections:
+        if text:
+            console.print(Rule(heading, style="dim"))
+            console.print(text)
     console.print()
 
 
@@ -522,12 +566,23 @@ def build_index() -> None:
         store.close()
         sys.exit(1)
 
-    console.print(f"[bold]Encoding {total} courses…[/bold]")
+    console.print(f"[bold]Encoding {total} courses...[/bold]")
 
     with _QuietModelLoad():
-        from tum_lecture_finder.search import build_embeddings  # noqa: PLC0415
+        from tum_lecture_finder.search import (  # noqa: PLC0415
+            build_embeddings,
+            ensure_model_loaded,
+        )
 
-        n = build_embeddings(store)
+        ensure_model_loaded()
+
+    with _make_progress() as emb_progress:
+        emb_task = emb_progress.add_task("Embeddings", total=None)
+
+        def _on_emb(done: int, total: int) -> None:
+            emb_progress.update(emb_task, completed=done, total=total)
+
+        n = build_embeddings(store, on_progress=_on_emb)
 
     console.print(f"[green]Done.[/green] Cached embeddings for {n} courses.")
     store.close()
@@ -560,7 +615,7 @@ def serve(host: str, port: int) -> None:
         console.print("[yellow]No courses stored. Run [bold]tlf update[/bold] first.[/yellow]")
         sys.exit(1)
 
-    console.print("[bold]Starting web server…[/bold]")
+    console.print("[bold]Starting web server...[/bold]")
     console.print(f"  [cyan]http://{host}:{port}[/cyan]")
     console.print(f"  {total} courses available")
     console.print("[dim]Press Ctrl+C to stop.[/dim]\n")
