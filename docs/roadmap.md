@@ -26,6 +26,7 @@ Status legend: done, current, planned, blocked, idea
 
 - sentence-transformers `all-MiniLM-L6-v2` for meaning-based matching.
 - Hybrid mode combines FTS + semantic scores.
+- Pre-computed embeddings cached to disk (.npz).
 - Model cached on disk; noisy HF/safetensors output suppressed.
 
 ### Description snippets
@@ -33,30 +34,41 @@ Status legend: done, current, planned, blocked, idea
 - When a search matches a description rather than the title, a relevant
   excerpt is shown in the results table.
 
-### Campus filtering
+### Campus detection (NavigaTUM-based)
 
-- Org-name keyword heuristic (~50 patterns across 6 campuses).
-- `--campus garching`, `--campus muenchen`, etc.
+- Building codes extracted from room data in courseGroups API responses.
+- Each building code resolved via TUM NavigaTUM API
+  (`nav.tum.de/api/search?q=<code>`).
+- Campus labels parsed from room subtexts — no hardcoded mappings.
+- Building cache persisted in SQLite to avoid redundant API calls.
+- Substring campus filter: `--campus garching` matches
+  `garching`, `garching-hochbrück`, etc.
+
+### Cross-semester deduplication
+
+- Courses sharing the same `identity_code_id` are grouped; search
+  results show the best-scoring instance with "Also in: 25S, 24W" etc.
+
+### Web UI (FastAPI)
+
+- FastAPI application with Jinja2 templates and static assets.
+- Search page with keyword/semantic/hybrid modes and filter dropdowns.
+- Course detail pages with TUMonline link and live schedule loading.
+- Stats page with semester, type, and campus distributions.
+- JSON API (`/api/search`, `/api/course/{id}`, `/api/stats`,
+  `/api/filters`, `/api/course/{id}/schedule`).
+- Security headers (CSP, X-Frame-Options, etc.), rate limiting.
+- `tlf serve` command to start the web server.
+
+### Course schedule / appointments
+
+- courseGroups API returns appointment and room data for most courses.
+- Live schedule fetched on course detail page via
+  `/api/course/{id}/schedule`.
 
 ---
 
 ## Planned / Ideas
-
-### Room-based campus detection
-
-**Status:** blocked (no public API for room data)
-
-The web UI shows room numbers and locations for each course, and
-NavigaTUM can map room codes to buildings and campuses. However, the
-public REST API does not expose room/scheduling data. The old
-webservice endpoint requires an auth token.
-
-**Options if this becomes unblocked:**
-
-1. If TUM adds room data to the public endpoint → parse and match via
-   NavigaTUM.
-2. Scrape the rendered web UI (fragile, JS-heavy).
-3. Use an authenticated session (not public-friendly).
 
 ### Server-side filtering via `$filter`
 
@@ -79,48 +91,19 @@ tested:
 
 These could enable server-side campus or programme filtering.
 
-### Course grouping / deduplication across semesters
-
-**Status:** idea
-
-The same course (e.g. "Requirements Engineering") appears in multiple
-semesters with different `course_id` values. The detail endpoint
-returns `sameCourseDtos` listing sibling offerings. Search results
-currently show all of them separately.
-
-**Possible approaches:**
-
-- Group by `courseNumber` and show only the most recent offering.
-- Use `sameCourseDtos` to build a course-family graph.
-- Add a `--semester` filter to `search` so users see only one semester.
-
 ### Search improvements
 
 **Status:** idea
 
 - **Exact-match boosting:** give higher weight when the query matches a
   title exactly, not just via prefix.
-- **German ↔ English:** if someone searches in English, also check the
-  German title and vice versa (currently both are indexed but a single
-  query may not find the translation).
-- **Semester filter on search:** only show courses from a specific
-  semester.
-- **Result caching:** cache semantic embeddings for all courses so
-  repeated semantic searches are instant.
-
-### Web / GUI frontend
-
-**Status:** idea
-
-Business logic lives outside `cli.py` by design. A FastAPI or
-Streamlit frontend could reuse `storage.py` and `search.py` directly.
-
-### Course schedule / calendar integration
-
-**Status:** blocked (same as room data — no public API)
-
-Appointment times are visible on the web but not in the REST response.
-Would require auth or scraping.
+- **German ↔ English cross-language:** boost results where a query in
+  one language matches the other language field.
+- **Campus display names:** NavigaTUM labels like
+  `campus-straubing-cs-biotechnologie-und-nachhaltigkeit` are unwieldy.
+  Add a display-name mapping for the UI.
+- **Campus grouping:** present sub-campuses (garching, garching-hochbrück)
+  under a parent "Garching area" group in filter dropdowns.
 
 ### ECTS / credit information
 

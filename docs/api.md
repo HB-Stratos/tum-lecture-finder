@@ -262,21 +262,25 @@ endpoint missing from earlier reverse-engineering attempts.
 ### Room / building codes
 
 The `resourceName` field contains a **TUM room code** in parentheses,
-e.g. `(8120.EG.001)`. The 4-digit building code prefix reliably maps
-to a campus:
+e.g. `(8120.EG.001)`. The 4-digit prefix is the building code.
 
-| Prefix | Campus    | Examples                            |
-| ------ | --------- | ----------------------------------- |
-| 0xxx   | München   | Stammgelände, Innenstadt            |
-| 1xxx   | München   | City-centre locations               |
-| 2xxx   | München   | Marsstr, Karlstr, sport halls       |
-| 3xxx   | München   | Lothstr (outskirts)                 |
-| 4xxx   | Freising  | Weihenstephan (WZW buildings)       |
-| 5xxx   | Garching  | Main campus (MI, Physics, MW)       |
-| 6xxx   | Garching  | (reserved / newer)                  |
-| 7xxx   | Heilbronn | CZS Heilbronn (7894)                |
-| 8xxx   | Garching  | Newer buildings (BC1, BC2, Galileo) |
-| 9xxx   | Other     | Ottobrunn (9377)                    |
+Building codes are resolved to campus labels dynamically via the
+**TUM NavigaTUM API** (`nav.tum.de/api/search?q=<building_code>`).
+Room search results include a `subtext` field with the campus label
+(e.g. `"garching, Mathe/Info (MI)"`). Results are cached in a
+`building_campuses` SQLite table so the API is only queried for
+newly seen building codes.
+
+Rough prefix patterns (for reference only — NavigaTUM is authoritative):
+
+| Prefix | Typical campus          |
+| ------ | ----------------------- |
+| 0xxx   | stammgelände            |
+| 1xxx   | stammgelände            |
+| 2xxx   | marsstraße / karlstraße |
+| 4xxx   | weihenstephan           |
+| 5xxx   | garching                |
+| 8xxx   | garching (newer)        |
 
 Some resources lack building codes:
 
@@ -286,8 +290,9 @@ Some resources lack building codes:
 
 ### Coverage
 
-From a sample of 200 courses: **~78%** have at least one appointment
-with room data. Online-only and TBA courses have no building codes.
+~61% of courses have at least one appointment with room data.
+Online-only and TBA courses have no building codes (~39% have no
+campus assigned).
 
 ---
 

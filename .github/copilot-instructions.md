@@ -62,14 +62,24 @@ src/tum_lecture_finder/
 
 ## TUM Campuses
 
-| Campus    | Typical org keywords             |
-| --------- | -------------------------------- |
-| München   | Stammgelände, Innenstadt, Munich |
-| Garching  | Garching                         |
-| Freising  | Weihenstephan, Freising          |
-| Straubing | Straubing, TUMCS                 |
-| Heilbronn | Heilbronn                        |
-| Singapore | Singapore, TUMCREATE             |
+Campus labels are resolved dynamically via the TUM NavigaTUM API at
+`nav.tum.de/api/search?q=<building_code>`. No hardcoded mappings exist.
+Common labels returned by NavigaTUM:
+
+| Label                    | Typical locations                  |
+| ------------------------ | ---------------------------------- |
+| stammgelände             | Main Munich campus                 |
+| garching                 | Garching research campus           |
+| garching-hochbrück       | Garching-Hochbrück Business Campus |
+| weihenstephan            | Freising / Weihenstephan           |
+| campus-heilbronn         | Heilbronn campus                   |
+| campus-straubing-…       | Straubing TUMCS                    |
+| campus-im-olympiapark-sz | Sport campus Munich                |
+| marsstraße 20, 21, 22    | Munich Marsstraße                  |
+| taufkirchen-ottobr.      | Ottobrunn / Taufkirchen            |
+
+Campus filtering uses substring matching: `--campus garching` matches
+both `garching` and `garching-hochbrück`.
 
 ## Build & Run
 
