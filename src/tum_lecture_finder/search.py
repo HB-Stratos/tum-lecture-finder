@@ -428,7 +428,7 @@ def semantic_search(
         return []
 
     # Encode query and compute similarities
-    query_embedding = model.encode(query, normalize_embeddings=True)
+    query_embedding = model.encode(query, normalize_embeddings=True, show_progress_bar=False)
     similarities = np.dot(corpus_embeddings, query_embedding)
 
     top_indices = np.argsort(similarities)[::-1][: limit * 2]

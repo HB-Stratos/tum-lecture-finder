@@ -19,6 +19,24 @@ import sys
 import structlog
 
 
+def _reorder_keys(
+    _logger: object,
+    _method: str,
+    event_dict: dict[str, object],
+) -> dict[str, object]:
+    """Move timestamp, level, and event to the front of the event dict.
+
+    This ensures JSON output reads naturally: timestamp first, then severity,
+    then the event name, then any extra fields.
+    """
+    ordered: dict[str, object] = {}
+    for key in ("timestamp", "level", "event"):
+        if key in event_dict:
+            ordered[key] = event_dict.pop(key)
+    ordered.update(event_dict)
+    return ordered
+
+
 def setup_logging(*, json_logs: bool | None = None) -> None:
     """Configure structlog and stdlib logging.
 
@@ -59,6 +77,7 @@ def setup_logging(*, json_logs: bool | None = None) -> None:
         structlog.stdlib.ProcessorFormatter(
             processors=[
                 structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+                _reorder_keys,
                 renderer,
             ],
             foreign_pre_chain=shared_processors,
