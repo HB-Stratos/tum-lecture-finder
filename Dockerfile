@@ -49,8 +49,9 @@ ENV HF_HUB_OFFLINE=1
 RUN groupadd --system --gid 999 nonroot \
  && useradd --system --gid 999 --uid 999 --create-home nonroot
 
-# Copy the application from the builder
-COPY --from=builder --chown=nonroot:nonroot /app /app
+# Copy the application from the builder (no --chown: .venv and .models are
+# read-only at runtime, and chowning thousands of small files is very slow).
+COPY --from=builder /app /app
 
 # Ensure the data directory exists and is writable by nonroot,
 # even when an empty Docker volume is mounted over it.
