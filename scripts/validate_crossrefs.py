@@ -1,4 +1,5 @@
 """Validate that compute_other_semesters produced correct cross-references."""
+
 from __future__ import annotations
 
 import sys
@@ -17,7 +18,7 @@ print(f"Total courses: {total}")
 # Courses with non-empty other_semesters
 row = conn.execute("SELECT COUNT(*) FROM courses WHERE other_semesters != ''").fetchone()
 with_xref = row[0]
-print(f"Courses with cross-references: {with_xref} ({100*with_xref/total:.1f}%)")
+print(f"Courses with cross-references: {with_xref} ({100 * with_xref / total:.1f}%)")
 
 # Average number of cross-ref semesters
 row2 = conn.execute(
@@ -39,8 +40,7 @@ for s in samples:
     stored_others = set(other_csv.split(","))
     # Recompute manually
     actual_rows = conn.execute(
-        "SELECT DISTINCT semester_key FROM courses "
-        "WHERE identity_code_id = ? AND course_id != ?",
+        "SELECT DISTINCT semester_key FROM courses WHERE identity_code_id = ? AND course_id != ?",
         (iid, cid),
     ).fetchall()
     actual_others = {r[0] for r in actual_rows}
@@ -48,15 +48,16 @@ for s in samples:
     status = "OK" if match else "MISMATCH"
     if not match:
         errors += 1
-    print(f"  [{status}] id={cid} sem={sem} iid={iid} "
-          f"stored={sorted(stored_others)} actual={sorted(actual_others)} "
-          f"title={title[:50]}")
+    print(
+        f"  [{status}] id={cid} sem={sem} iid={iid} "
+        f"stored={sorted(stored_others)} actual={sorted(actual_others)} "
+        f"title={title[:50]}"
+    )
 
 # Broader validation: count mismatches across all courses
 print("\nFull validation (all courses with identity_code_id != 0)...")
 all_courses = conn.execute(
-    "SELECT course_id, identity_code_id, other_semesters "
-    "FROM courses WHERE identity_code_id != 0"
+    "SELECT course_id, identity_code_id, other_semesters FROM courses WHERE identity_code_id != 0"
 ).fetchall()
 
 mismatch_count = 0
@@ -64,8 +65,7 @@ for row in all_courses:
     cid, iid, other_csv = row
     stored = set(other_csv.split(",")) if other_csv else set()
     actual_rows = conn.execute(
-        "SELECT DISTINCT semester_key FROM courses "
-        "WHERE identity_code_id = ? AND course_id != ?",
+        "SELECT DISTINCT semester_key FROM courses WHERE identity_code_id = ? AND course_id != ?",
         (iid, cid),
     ).fetchall()
     actual = {r[0] for r in actual_rows}

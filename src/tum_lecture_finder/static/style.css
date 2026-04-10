@@ -155,6 +155,12 @@ a:hover {
   background: rgba(255, 255, 255, 0.15);
 }
 
+.nav-link-github {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
 /* ── Container ─────────────────────────────────────────────────────────── */
 .container {
   max-width: var(--max-width);
@@ -808,6 +814,21 @@ a:hover {
 .footer-sub {
   font-size: 0.75rem;
   margin-top: 0.25rem;
+}
+
+.footer-actions {
+  margin-top: 0.5rem;
+}
+
+.footer-action-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--text-muted);
+}
+
+.footer-action-link:hover {
+  color: var(--tum-blue);
 }
 
 /* ── Tooltips ──────────────────────────────────────────────────────────── */

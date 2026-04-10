@@ -1,6 +1,7 @@
 """Tests for search module."""
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -480,3 +481,138 @@ class TestFulltextSearch:
         r = results[0]
         assert r.score != 0
         assert isinstance(r.snippet, str)
+
+
+# ── Stale embeddings ─────────────────────────────────────────────────────────
+
+
+class TestStaleEmbeddings:
+    """When embeddings are stale (DB has courses not in the cache), search silently skips them."""
+
+    def test_courses_without_embeddings_are_silently_skipped(self, tmp_path):
+        """semantic_search only returns results for courses that have cached embeddings."""
+        import numpy as np
+
+        import tum_lecture_finder.storage as storage_mod
+        from tum_lecture_finder.search import semantic_search
+
+        original_path = storage_mod.EMBEDDINGS_PATH
+        storage_mod.EMBEDDINGS_PATH = tmp_path / "embeddings.npz"
+
+        try:
+            store = CourseStore(db_path=tmp_path / "test.db")
+            # Add 3 courses to the DB
+            store.upsert_courses([
+                _make_course(course_id=1, title_en="Machine Learning"),
+                _make_course(course_id=2, title_en="Deep Learning"),
+                _make_course(course_id=3, title_en="Robotics"),
+            ])
+
+            # Save embeddings for only courses 1 and 2 (course 3 is "stale")
+            ids = np.array([1, 2], dtype=np.int64)
+            emb = np.array([
+                [1.0, 0.0, 0.0],
+                [0.9, 0.1, 0.0],
+            ], dtype=np.float32)
+            np.savez_compressed(str(storage_mod.EMBEDDINGS_PATH), ids=ids, emb=emb)
+            store.invalidate_embeddings_cache()
+
+            # Patch the model to avoid actually loading sentence-transformers
+            import tum_lecture_finder.search as search_mod
+            orig_model = search_mod._model
+            orig_cache = search_mod._course_cache
+
+            mock_model = MagicMock()
+            mock_model.encode.return_value = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+            search_mod._model = mock_model
+            search_mod._course_cache = None  # force reload
+
+            try:
+                results = semantic_search(store, "machine learning", limit=10)
+                result_ids = {r.course.course_id for r in results}
+                # Course 3 has no embedding — should NOT appear
+                assert 3 not in result_ids
+                # Courses 1 and 2 may appear (have embeddings)
+                assert len(results) <= 2
+            finally:
+                search_mod._model = orig_model
+                search_mod._course_cache = orig_cache
+                store.invalidate_embeddings_cache()
+
+            store.close()
+        finally:
+            storage_mod.EMBEDDINGS_PATH = original_path
+
+
+# ── Deduplication semester comparison ────────────────────────────────────────
+
+
+class TestDedupSemesterComparison:
+    """_dedup_by_identity() picks the most recent semester by string comparison."""
+
+    def test_more_recent_semester_kept(self):
+        """When two results share an identity, the newer semester is displayed."""
+        from tum_lecture_finder.search import _dedup_by_identity
+
+        older = SearchResult(
+            course=_make_course(course_id=1, semester_key="24W", identity_code_id=100),
+            score=1.0,
+        )
+        newer = SearchResult(
+            course=_make_course(course_id=2, semester_key="25W", identity_code_id=100),
+            score=0.8,
+        )
+        result = _dedup_by_identity([older, newer])
+        assert len(result) == 1
+        # Most recent semester should be kept
+        assert result[0].course.semester_key == "25W"
+
+    def test_other_semesters_merged(self):
+        """After dedup, the kept result has other_semesters populated."""
+        from tum_lecture_finder.search import _dedup_by_identity
+
+        r1 = SearchResult(
+            course=_make_course(course_id=1, semester_key="25W", identity_code_id=100),
+            score=1.0,
+            other_semesters=["24W"],
+        )
+        r2 = SearchResult(
+            course=_make_course(course_id=2, semester_key="25S", identity_code_id=100),
+            score=0.5,
+            other_semesters=["24S"],
+        )
+        result = _dedup_by_identity([r1, r2])
+        assert len(result) == 1
+        # All known semesters (except the displayed one) should be in other_semesters
+        assert len(result[0].other_semesters) >= 1
+
+    def test_zero_identity_code_not_deduped(self):
+        """Courses with identity_code_id=0 are never merged (each is unique)."""
+        from tum_lecture_finder.search import _dedup_by_identity
+
+        r1 = SearchResult(
+            course=_make_course(course_id=1, semester_key="25W", identity_code_id=0),
+            score=1.0,
+        )
+        r2 = SearchResult(
+            course=_make_course(course_id=2, semester_key="25S", identity_code_id=0),
+            score=0.9,
+        )
+        result = _dedup_by_identity([r1, r2])
+        assert len(result) == 2  # not merged
+
+    def test_string_comparison_works_for_current_year_format(self):
+        """Semester keys like 24W, 25S, 25W compare correctly as strings."""
+        from tum_lecture_finder.search import _dedup_by_identity
+
+        results = [
+            SearchResult(
+                course=_make_course(course_id=i, semester_key=sem, identity_code_id=100),
+                score=1.0,
+            )
+            for i, sem in enumerate(["24W", "24S", "25S", "25W"], 1)
+        ]
+        deduped = _dedup_by_identity(results)
+        assert len(deduped) == 1
+        # "25W" > "25S" > "24W" > "24S" lexicographically — 25W should win
+        assert deduped[0].course.semester_key == "25W"

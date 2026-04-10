@@ -3,6 +3,7 @@
 Starts the server, sends requests directly with keep-alive,
 and measures just the HTTP response time (no browser overhead).
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -21,8 +22,16 @@ def main() -> None:
 
     print(f"Starting server on port {port}...")
     server = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "tum_lecture_finder.web:app",
-         "--host", "127.0.0.1", "--port", str(port)],
+        [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "tum_lecture_finder.web:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
@@ -54,10 +63,26 @@ def main() -> None:
                 ("GET /api/filters", "/api/filters", {}),
                 ("GET /api/course/950736917", "/api/course/950736917", {}),
                 ("Keyword: 'Mathematik'", "/api/search", {"q": "Mathematik", "mode": "keyword"}),
-                ("Keyword: 'machine learning'", "/api/search", {"q": "machine learning", "mode": "keyword"}),
-                ("Semantic: 'build robots'", "/api/search", {"q": "build robots", "mode": "semantic"}),
-                ("Hybrid: 'deep learning'", "/api/search", {"q": "deep learning", "mode": "hybrid"}),
-                ("Keyword: 'Informatik' limit=50", "/api/search", {"q": "Informatik", "mode": "keyword", "limit": 50}),
+                (
+                    "Keyword: 'machine learning'",
+                    "/api/search",
+                    {"q": "machine learning", "mode": "keyword"},
+                ),
+                (
+                    "Semantic: 'build robots'",
+                    "/api/search",
+                    {"q": "build robots", "mode": "semantic"},
+                ),
+                (
+                    "Hybrid: 'deep learning'",
+                    "/api/search",
+                    {"q": "deep learning", "mode": "hybrid"},
+                ),
+                (
+                    "Keyword: 'Informatik' limit=50",
+                    "/api/search",
+                    {"q": "Informatik", "mode": "keyword", "limit": 50},
+                ),
             ]
 
             print(f"{'Endpoint':<45} {'Avg':>8} {'Min':>8} {'Max':>8}  (5 runs)")

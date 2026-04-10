@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from typing import TYPE_CHECKING
 
 from tum_lecture_finder.models import Course, SearchResult
@@ -60,9 +61,7 @@ def _dedup_by_identity(
                 existing.other_semesters.append(new_sem)
             # Remove the displayed semester from other_semesters
             displayed = existing.course.semester_key
-            existing.other_semesters = [
-                s for s in existing.other_semesters if s != displayed
-            ]
+            existing.other_semesters = [s for s in existing.other_semesters if s != displayed]
             existing.other_semesters.sort(reverse=True)
             continue
         idx = len(output)
@@ -119,7 +118,7 @@ def _extract_excerpt(text: str, token: str) -> str:
             excerpt = excerpt[space + 1 :]
     if end < len(text):
         space = excerpt.rfind(" ")
-        if space != -1:
+        if space > 0:  # guard: -1 means no space found; 0 would empty the string
             excerpt = excerpt[:space]
     return excerpt
 
@@ -238,9 +237,11 @@ def fulltext_search(
 # ── Semantic search ────────────────────────────────────────────────────────
 
 _model = None  # lazy-loaded sentence-transformers model
+_model_lock = threading.Lock()
 
 # ── Cached course data for semantic search ─────────────────────────────────
 _course_cache: tuple[list[Course], dict[int, list[str]]] | None = None
+_course_cache_lock = threading.Lock()
 
 
 def _load_course_data(
@@ -255,21 +256,25 @@ def _load_course_data(
     global _course_cache  # noqa: PLW0603
     if _course_cache is not None:
         return _course_cache
-    all_rows = store.get_all_courses()
-    courses = []
-    other_sems: dict[int, list[str]] = {}
-    for r in all_rows:
-        c = row_to_course(r)
-        courses.append(c)
-        other_sems[c.course_id] = parse_other_semesters(r)
-    _course_cache = (courses, other_sems)
+    with _course_cache_lock:
+        if _course_cache is not None:  # re-check after acquiring lock
+            return _course_cache
+        all_rows = store.get_all_courses()
+        courses = []
+        other_sems: dict[int, list[str]] = {}
+        for r in all_rows:
+            c = row_to_course(r)
+            courses.append(c)
+            other_sems[c.course_id] = parse_other_semesters(r)
+        _course_cache = (courses, other_sems)
     return _course_cache
 
 
 def invalidate_course_cache() -> None:
     """Clear the in-memory course cache (call after database updates)."""
     global _course_cache  # noqa: PLW0603
-    _course_cache = None
+    with _course_cache_lock:
+        _course_cache = None
 
 
 def _get_model() -> object:
@@ -281,9 +286,11 @@ def _get_model() -> object:
     """
     global _model  # noqa: PLW0603
     if _model is None:
-        from sentence_transformers import SentenceTransformer  # noqa: PLC0415
+        with _model_lock:
+            if _model is None:  # re-check after acquiring lock
+                from sentence_transformers import SentenceTransformer
 
-        _model = SentenceTransformer("all-MiniLM-L6-v2")
+                _model = SentenceTransformer("all-MiniLM-L6-v2")
     return _model
 
 
@@ -316,7 +323,7 @@ def build_embeddings(
         Number of courses embedded.
 
     """
-    import numpy as np  # noqa: PLC0415
+    import numpy as np
 
     model = _get_model()
 
@@ -369,7 +376,7 @@ def semantic_search(
         Sorted list of :class:`SearchResult`.
 
     """
-    import numpy as np  # noqa: PLC0415
+    import numpy as np
 
     model = _get_model()
 

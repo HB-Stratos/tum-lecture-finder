@@ -44,8 +44,16 @@ def profile() -> None:
     # Start the server
     print(f"Starting server on port {port}...")
     server = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "tum_lecture_finder.web:app",
-         "--host", "127.0.0.1", "--port", str(port)],
+        [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "tum_lecture_finder.web:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
@@ -74,7 +82,7 @@ def profile() -> None:
 
             # 1. Home page load
             print("=== Page Loads ===")
-            m = measure("Home page (/)") 
+            m = measure("Home page (/)")
             page.goto(base_url)
             page.wait_for_load_state("networkidle")
             finish(m)
@@ -91,7 +99,7 @@ def profile() -> None:
             page.wait_for_load_state("networkidle")
 
             # Set mode to keyword
-            mode_select = page.locator("#search-mode")
+            mode_select = page.locator("#filter-mode")
             if mode_select.count() > 0:
                 mode_select.select_option("keyword")
 
@@ -158,7 +166,9 @@ def profile() -> None:
             page.wait_for_selector(".result-card, .no-results, .results-count", timeout=30000)
             initial_count = page.locator(".result-card").count()
 
-            load_more = page.locator("#load-more, button:has-text('Load more'), button:has-text('more')")
+            load_more = page.locator(
+                "#load-more, button:has-text('Load more'), button:has-text('more')"
+            )
             if load_more.count() > 0 and load_more.is_visible():
                 m = measure("Load more results")
                 load_more.click()

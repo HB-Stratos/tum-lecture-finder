@@ -97,8 +97,7 @@ def main() -> None:
     rows = store.get_all_courses()
     t1 = time.perf_counter()
     console.print(
-        f"    [dim]→ read {len(rows)} rows in {t1 - t0:.2f}s "
-        f"(upsert would be ~similar)[/dim]"
+        f"    [dim]→ read {len(rows)} rows in {t1 - t0:.2f}s (upsert would be ~similar)[/dim]"
     )
 
     console.print("[dim]Computing semester cross-references…[/dim]")

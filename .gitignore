@@ -18,6 +18,10 @@ data/
 .idea/
 .vscode/
 
+# Tool configs (local)
+.claude/
+.serena/
+
 # OS
 .DS_Store
 
