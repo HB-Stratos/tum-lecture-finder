@@ -57,16 +57,18 @@ COPY --from=builder /app /app
 # even when an empty Docker volume is mounted over it.
 RUN mkdir -p /app/data && chown nonroot:nonroot /app/data
 
+# Entrypoint fixes /app/data ownership (for files from `docker cp`)
+# then drops to nonroot via setpriv.
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
 # Place executables in the environment at the front of the path
 ENV PATH="/app/.venv/bin:$PATH"
-
-# Use the non-root user to run our application
-USER nonroot
 
 # Use `/app` as the working directory
 WORKDIR /app
 
 EXPOSE 8000
 
-# Run
+ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["tlf", "serve", "--host", "0.0.0.0"]
