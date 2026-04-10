@@ -648,9 +648,14 @@ def serve(host: str, port: int) -> None:
     total = store.course_count()
     store.close()
 
-    if total == 0:
+    if total == 0 and not os.environ.get("TLF_UPDATE_CRON"):
         console.print("[yellow]No courses stored. Run [bold]tlf update[/bold] first.[/yellow]")
         sys.exit(1)
+    elif total == 0:
+        console.print(
+            "[yellow]No courses stored yet — the scheduled updater "
+            "(TLF_UPDATE_CRON) will populate the database.[/yellow]"
+        )
 
     console.print("[bold]Starting web server...[/bold]")
     console.print(f"  [cyan]http://{host}:{port}[/cyan]")
@@ -660,8 +665,7 @@ def serve(host: str, port: int) -> None:
             "[yellow][bold]Warning:[/bold] Listening on 0.0.0.0 exposes "
             "the server to your network. "
             "Use a reverse proxy with TLS and set "
-            "TLF_TRUST_PROXY=1 if you need real client IPs.\n"
-            "See the README secure deployment checklist.\n[/yellow]"
+            "TLF_TRUST_PROXY=1 if you need real client IPs.[/yellow]\n"
         )
     console.print("[dim]Press Ctrl+C to stop.[/dim]\n")
 

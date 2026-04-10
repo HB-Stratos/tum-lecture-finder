@@ -227,6 +227,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
             full_update_every=_FULL_UPDATE_EVERY,
         )
 
+        # If the DB is empty, trigger the first update immediately instead of
+        # waiting for the cron tick (which could be hours away on a fresh deploy).
+        if _store.course_count() == 0:
+            log.info("empty_db_detected", action="triggering immediate first update")
+            scheduler.add_job(_scheduled_update, "date")  # run once, now
+
     yield
 
     if scheduler is not None:
