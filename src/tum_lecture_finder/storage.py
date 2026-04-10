@@ -182,10 +182,41 @@ ON CONFLICT(course_id) DO UPDATE SET
     literature       = excluded.literature;
 """
 
+_UPSERT_LIST_ONLY = """\
+INSERT INTO courses (
+    course_id, semester_key, course_number,
+    title_de, title_en, course_type, sws,
+    organisation, instructors, language, campus,
+    identity_code_id,
+    content_de, content_en,
+    objectives_de, objectives_en,
+    prerequisites, literature
+) VALUES (
+    :course_id, :semester_key, :course_number,
+    :title_de, :title_en, :course_type, :sws,
+    :organisation, :instructors, :language, :campus,
+    :identity_code_id,
+    :content_de, :content_en,
+    :objectives_de, :objectives_en,
+    :prerequisites, :literature
+)
+ON CONFLICT(course_id) DO UPDATE SET
+    semester_key     = excluded.semester_key,
+    course_number    = excluded.course_number,
+    title_de         = excluded.title_de,
+    title_en         = excluded.title_en,
+    course_type      = excluded.course_type,
+    sws              = excluded.sws,
+    organisation     = excluded.organisation,
+    instructors      = excluded.instructors,
+    language         = excluded.language,
+    identity_code_id = excluded.identity_code_id;
+"""
+
 
 def _dict_from_course(c: Course) -> dict[str, object]:
     """Convert a :class:`Course` to a dict suitable for SQL parameter binding."""
-    from dataclasses import asdict  # noqa: PLC0415
+    from dataclasses import asdict
 
     return asdict(c)
 
@@ -216,7 +247,7 @@ def parse_other_semesters(row: sqlite3.Row) -> list[str]:
         List of semester keys (e.g. ``["25W", "24W"]``), or empty list.
 
     """
-    csv: str = row["other_semesters"] if "other_semesters" in dict(row) else ""
+    csv: str = row["other_semesters"] if "other_semesters" in row.keys() else ""  # noqa: SIM118
     return [s for s in csv.split(",") if s]
 
 
@@ -246,6 +277,7 @@ class CourseStore:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL;")
         self._conn.execute("PRAGMA foreign_keys=ON;")
+        self._embeddings_cache: tuple[NDArray[np.int64], NDArray[np.float32]] | None = None
         self._init_schema()
 
     # ── schema ─────────────────────────────────────────────────────────
@@ -256,19 +288,29 @@ class CourseStore:
         current = int(row[0]) if row else 0
 
         if current < _SCHEMA_VERSION:
-            # Drop old schema and recreate
-            self._conn.executescript(
-                "DROP TRIGGER IF EXISTS courses_ai;"
-                "DROP TRIGGER IF EXISTS courses_au;"
-                "DROP TRIGGER IF EXISTS courses_ad;"
-                "DROP TABLE IF EXISTS courses_fts;"
-                "DROP TABLE IF EXISTS courses;"
-            )
-            self._conn.execute(
-                "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
-                (str(_SCHEMA_VERSION),),
-            )
-            self._conn.commit()
+            # Drop old schema and recreate — wrapped in a transaction so a
+            # mid-migration crash leaves the DB in a consistent (empty) state
+            # rather than a partially-migrated one.  Note: executescript() always
+            # issues a COMMIT first, so individual execute() calls are used here
+            # to preserve transaction semantics.
+            try:
+                self._conn.execute("BEGIN")
+                for stmt in (
+                    "DROP TRIGGER IF EXISTS courses_ai",
+                    "DROP TRIGGER IF EXISTS courses_au",
+                    "DROP TRIGGER IF EXISTS courses_ad",
+                    "DROP TABLE IF EXISTS courses_fts",
+                    "DROP TABLE IF EXISTS courses",
+                ):
+                    self._conn.execute(stmt)
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
+                    (str(_SCHEMA_VERSION),),
+                )
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
 
         cur = self._conn.cursor()
         cur.executescript(_CREATE_COURSES)
@@ -283,14 +325,51 @@ class CourseStore:
         self._conn.commit()
 
     # ── write ──────────────────────────────────────────────────────────
-    def upsert_courses(self, courses: Iterable[Course]) -> int:
-        """Insert or update courses. Returns the number of rows affected."""
+    def upsert_courses(self, courses: Iterable[Course], *, commit: bool = True) -> int:
+        """Insert or update courses. Returns the number of rows affected.
+
+        Args:
+            courses: Course objects to upsert.
+            commit: If True (default), commit the transaction. Pass False to
+                let the caller commit manually (e.g. for batching with other writes).
+
+        """
         rows = [_dict_from_course(c) for c in courses]
         if not rows:
             return 0
         cur = self._conn.cursor()
         cur.executemany(_UPSERT, rows)
-        self._conn.commit()
+        if commit:
+            self._conn.commit()
+        return cur.rowcount
+
+    def upsert_course_list_fields(
+        self,
+        courses: Iterable[Course],
+        *,
+        commit: bool = True,
+    ) -> int:
+        """Upsert only list-level metadata, preserving existing descriptions and campus.
+
+        Use this for incremental updates where detail API calls were skipped.
+        Description columns (content, objectives, prerequisites, literature) and
+        campus are NOT overwritten for existing rows.
+
+        Args:
+            courses: Course objects whose list-level fields should be upserted.
+            commit: If True (default), commit the transaction.
+
+        Returns:
+            Number of rows affected.
+
+        """
+        rows = [_dict_from_course(c) for c in courses]
+        if not rows:
+            return 0
+        cur = self._conn.cursor()
+        cur.executemany(_UPSERT_LIST_ONLY, rows)
+        if commit:
+            self._conn.commit()
         return cur.rowcount
 
     def delete_semester(self, semester_key: str) -> int:
@@ -454,9 +533,75 @@ class CourseStore:
         ).fetchall()
         return [(r["campus"], r["cnt"]) for r in rows]
 
+    def commit(self) -> None:
+        """Commit the current transaction."""
+        self._conn.commit()
+
     def close(self) -> None:
         """Close the database connection."""
         self._conn.close()
+
+    # ── incremental update helpers ─────────────────────────────────────
+    def get_course_ids_with_details(
+        self,
+        semester_keys: list[str] | None = None,
+    ) -> set[int]:
+        """Return course IDs that already have at least one non-empty description.
+
+        Use this to build a skip-set for incremental updates: courses in the
+        returned set do not need their details re-fetched from the API.
+
+        Args:
+            semester_keys: If given, only consider courses in these semesters.
+                When ``None``, all semesters are included.
+
+        Returns:
+            Set of course IDs with populated descriptions.
+
+        """
+        sql = (
+            "SELECT course_id FROM courses "
+            "WHERE (content_de != '' OR content_en != '' "
+            "       OR objectives_de != '' OR objectives_en != '')"
+        )
+        params: list[str] = []
+        if semester_keys:
+            placeholders = ",".join("?" for _ in semester_keys)
+            sql += f" AND semester_key IN ({placeholders})"
+            params = list(semester_keys)
+        rows = self._conn.execute(sql, params).fetchall()
+        return {r[0] for r in rows}
+
+    # ── meta key-value store ───────────────────────────────────────────
+    def set_meta(self, key: str, value: str) -> None:
+        """Store a key-value pair in the meta table.
+
+        Args:
+            key: The meta key.
+            value: The meta value.
+
+        """
+        self._conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+            (key, value),
+        )
+        self._conn.commit()
+
+    def get_meta(self, key: str, *, default: str | None = None) -> str | None:
+        """Retrieve a value from the meta table.
+
+        Args:
+            key: The meta key.
+            default: Value to return if the key does not exist.
+
+        Returns:
+            The stored value, or *default* if the key is not found.
+
+        """
+        row = self._conn.execute(
+            "SELECT value FROM meta WHERE key = ?", (key,)
+        ).fetchone()
+        return row[0] if row else default
 
     # ── building cache ─────────────────────────────────────────────────
     def get_building_cache(self) -> dict[str, str]:
@@ -493,37 +638,39 @@ class CourseStore:
     ) -> None:
         """Persist pre-computed embeddings to disk.
 
+        Writes to a temporary file first, then atomically renames to the
+        final path.  This avoids a concurrent reader seeing a half-written
+        file during long-running scheduled updates.
+
         Args:
             course_ids: 1-D array of course ids.
             embeddings: 2-D array of shape ``(n, dim)``.
 
         """
-        import numpy as np  # noqa: PLC0415
+        import numpy as np
 
-        np.savez_compressed(EMBEDDINGS_PATH, ids=course_ids, emb=embeddings)
-        CourseStore.invalidate_embeddings_cache()
+        tmp = EMBEDDINGS_PATH.with_name(EMBEDDINGS_PATH.stem + "_tmp.npz")
+        np.savez_compressed(tmp, ids=course_ids, emb=embeddings)
+        tmp.replace(EMBEDDINGS_PATH)
+        self.invalidate_embeddings_cache()
 
-    _embeddings_cache: tuple[NDArray[np.int64], NDArray[np.float32]] | None = None
-
-    @classmethod
-    def load_embeddings(cls) -> tuple[NDArray[np.int64], NDArray[np.float32]] | None:
+    def load_embeddings(self) -> tuple[NDArray[np.int64], NDArray[np.float32]] | None:
         """Load cached embeddings from disk (memoized after first load).
 
         Returns:
             ``(course_ids, embeddings)`` or ``None`` if not cached.
 
         """
-        if cls._embeddings_cache is not None:
-            return cls._embeddings_cache
+        if self._embeddings_cache is not None:
+            return self._embeddings_cache
         if not EMBEDDINGS_PATH.exists():
             return None
-        import numpy as np  # noqa: PLC0415
+        import numpy as np
 
         data = np.load(EMBEDDINGS_PATH)
-        cls._embeddings_cache = (data["ids"], data["emb"])
-        return cls._embeddings_cache
+        self._embeddings_cache = (data["ids"], data["emb"])
+        return self._embeddings_cache
 
-    @classmethod
-    def invalidate_embeddings_cache(cls) -> None:
+    def invalidate_embeddings_cache(self) -> None:
         """Clear the in-memory embeddings cache (call after re-encoding)."""
-        cls._embeddings_cache = None
+        self._embeddings_cache = None

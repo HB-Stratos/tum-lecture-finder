@@ -432,13 +432,18 @@ class TestBuildingCache:
 
 
 class TestEmbeddings:
-    def test_load_returns_none_when_no_file(self):
-        CourseStore.invalidate_embeddings_cache()
-        # The default path won't exist in a clean environment,
-        # but we test the pattern — this may return data if user has a real DB
-        # At minimum, it shouldn't crash
-        result = CourseStore.load_embeddings()
-        assert result is None or isinstance(result, tuple)
+    def test_load_returns_none_when_no_file(self, tmp_path):
+        store = CourseStore(db_path=tmp_path / "test.db")
+        store.invalidate_embeddings_cache()
+        # EMBEDDINGS_PATH won't exist in tmp_path; result must be None
+        original_path = storage_mod.EMBEDDINGS_PATH
+        storage_mod.EMBEDDINGS_PATH = tmp_path / "no_embeddings.npz"
+        try:
+            result = store.load_embeddings()
+            assert result is None
+        finally:
+            storage_mod.EMBEDDINGS_PATH = original_path
+            store.close()
 
     def test_save_and_load_roundtrip(self, store, tmp_path):
         ids = np.array([1, 2, 3], dtype=np.int64)
@@ -448,34 +453,37 @@ class TestEmbeddings:
         original_path = storage_mod.EMBEDDINGS_PATH
         storage_mod.EMBEDDINGS_PATH = tmp_path / "test_embeddings.npz"
         try:
-            CourseStore.invalidate_embeddings_cache()
+            store.invalidate_embeddings_cache()
             store.save_embeddings(ids, emb)
-            result = CourseStore.load_embeddings()
+            result = store.load_embeddings()
             assert result is not None
             loaded_ids, loaded_emb = result
             np.testing.assert_array_equal(loaded_ids, ids)
             np.testing.assert_array_almost_equal(loaded_emb, emb)
         finally:
             storage_mod.EMBEDDINGS_PATH = original_path
-            CourseStore.invalidate_embeddings_cache()
+            store.invalidate_embeddings_cache()
 
     def test_memoization(self, tmp_path):
+        store = CourseStore(db_path=tmp_path / "test.db")
         original_path = storage_mod.EMBEDDINGS_PATH
         storage_mod.EMBEDDINGS_PATH = tmp_path / "test_embeddings.npz"
         try:
-            CourseStore.invalidate_embeddings_cache()
+            store.invalidate_embeddings_cache()
             ids = np.array([1], dtype=np.int64)
             emb = np.array([[0.1, 0.2]], dtype=np.float32)
             np.savez_compressed(str(storage_mod.EMBEDDINGS_PATH), ids=ids, emb=emb)
 
-            result1 = CourseStore.load_embeddings()
-            result2 = CourseStore.load_embeddings()
+            result1 = store.load_embeddings()
+            result2 = store.load_embeddings()
             assert result1 is result2  # Same object (cached)
         finally:
             storage_mod.EMBEDDINGS_PATH = original_path
-            CourseStore.invalidate_embeddings_cache()
+            store.invalidate_embeddings_cache()
+            store.close()
 
     def test_invalidate_clears_cache(self, tmp_path):
+        store = CourseStore(db_path=tmp_path / "test.db")
         original_path = storage_mod.EMBEDDINGS_PATH
         storage_mod.EMBEDDINGS_PATH = tmp_path / "test_embeddings.npz"
         try:
@@ -483,15 +491,16 @@ class TestEmbeddings:
             emb = np.array([[0.5]], dtype=np.float32)
             np.savez_compressed(str(storage_mod.EMBEDDINGS_PATH), ids=ids, emb=emb)
 
-            CourseStore.invalidate_embeddings_cache()
-            result1 = CourseStore.load_embeddings()
-            CourseStore.invalidate_embeddings_cache()
-            result2 = CourseStore.load_embeddings()
+            store.invalidate_embeddings_cache()
+            result1 = store.load_embeddings()
+            store.invalidate_embeddings_cache()
+            result2 = store.load_embeddings()
             # After invalidation, should re-read from disk (different object)
             assert result1 is not result2
         finally:
             storage_mod.EMBEDDINGS_PATH = original_path
-            CourseStore.invalidate_embeddings_cache()
+            store.invalidate_embeddings_cache()
+            store.close()
 
 
 # ── Schema migration ──────────────────────────────────────────────────────
@@ -514,3 +523,304 @@ class TestSchema:
         s.upsert_courses([_make_course()])
         assert s.course_count() == 1
         s.close()
+
+    def test_schema_migration_drops_and_recreates(self, tmp_path, monkeypatch):
+        """When schema version bumps, the DB is wiped and rebuilt cleanly."""
+        import tum_lecture_finder.storage as storage_mod
+
+        db_path = tmp_path / "test.db"
+
+        # Create a DB at the current schema version
+        s1 = CourseStore(db_path=db_path)
+        s1.upsert_courses([_make_course(course_id=1)])
+        assert s1.course_count() == 1
+        s1.close()
+
+        # Simulate a schema version bump by patching the version constant
+        old_version = storage_mod._SCHEMA_VERSION
+        monkeypatch.setattr(storage_mod, "_SCHEMA_VERSION", old_version + 1)
+
+        # Opening the DB should migrate (drop + recreate) — courses are gone
+        s2 = CourseStore(db_path=db_path)
+        assert s2.course_count() == 0  # data wiped after migration
+        s2.close()
+
+        # Restore so other tests aren't affected (monkeypatch handles this, but be explicit)
+
+
+# ── compute_other_semesters ──────────────────────────────────────────────────
+
+
+class TestComputeOtherSemesters:
+    """compute_other_semesters() links same-course entries across semesters."""
+
+    def test_links_same_identity_code_across_semesters(self, tmp_path):
+        """Courses with the same identity_code_id are linked."""
+        store = CourseStore(db_path=tmp_path / "test.db")
+        store.upsert_courses([
+            _make_course(course_id=1, semester_key="25W", identity_code_id=100),
+            _make_course(course_id=2, semester_key="25S", identity_code_id=100),
+            _make_course(course_id=3, semester_key="24W", identity_code_id=100),
+        ])
+        store.compute_other_semesters()
+
+        # Each course should see the other two semesters in other_semesters
+        row = store.get_course(1)
+        assert row is not None
+        other = row["other_semesters"] or ""
+        assert "25S" in other or "24W" in other
+
+        store.close()
+
+    def test_no_links_without_identity_code(self, tmp_path):
+        """Courses with identity_code_id=0 are not cross-linked."""
+        store = CourseStore(db_path=tmp_path / "test.db")
+        store.upsert_courses([
+            _make_course(course_id=1, semester_key="25W", identity_code_id=0),
+            _make_course(course_id=2, semester_key="25S", identity_code_id=0),
+        ])
+        store.compute_other_semesters()
+
+        row = store.get_course(1)
+        other = row["other_semesters"] if row else ""
+        assert not other  # no cross-reference
+
+        store.close()
+
+    def test_different_identity_codes_not_linked(self, tmp_path):
+        """Courses with different identity codes remain independent."""
+        store = CourseStore(db_path=tmp_path / "test.db")
+        store.upsert_courses([
+            _make_course(course_id=1, semester_key="25W", identity_code_id=100),
+            _make_course(course_id=2, semester_key="25S", identity_code_id=200),
+        ])
+        store.compute_other_semesters()
+
+        row1 = store.get_course(1)
+        other1 = row1["other_semesters"] if row1 else ""
+        assert not other1  # identity 100 has only one entry
+
+        store.close()
+
+    def test_idempotent(self, tmp_path):
+        """Calling compute_other_semesters twice gives the same result."""
+        store = CourseStore(db_path=tmp_path / "test.db")
+        store.upsert_courses([
+            _make_course(course_id=1, semester_key="25W", identity_code_id=100),
+            _make_course(course_id=2, semester_key="25S", identity_code_id=100),
+        ])
+        store.compute_other_semesters()
+        row_after_first = store.get_course(1)
+        other_first = row_after_first["other_semesters"] if row_after_first else ""
+
+        store.compute_other_semesters()
+        row_after_second = store.get_course(1)
+        other_second = row_after_second["other_semesters"] if row_after_second else ""
+
+        assert other_first == other_second
+        store.close()
+
+
+class TestAtomicEmbeddingsWrite:
+    """Verify save_embeddings uses atomic write-then-rename."""
+
+    def test_save_embeddings_atomic_rename(self, store, tmp_path, monkeypatch):
+        """save_embeddings writes to a temp file then renames, not direct write."""
+        emb_path = tmp_path / "embeddings.npz"
+        monkeypatch.setattr(storage_mod, "EMBEDDINGS_PATH", emb_path)
+
+        ids = np.array([1, 2], dtype=np.int64)
+        emb = np.random.default_rng(42).random((2, 4)).astype(np.float32)
+        store.save_embeddings(ids, emb)
+
+        assert emb_path.exists()
+        # Temp file should have been cleaned up by the rename
+        assert not emb_path.with_name(emb_path.stem + "_tmp.npz").exists()
+
+        # Verify data round-trips correctly
+        data = np.load(emb_path)
+        np.testing.assert_array_equal(data["ids"], ids)
+        np.testing.assert_array_almost_equal(data["emb"], emb)
+
+    def test_save_embeddings_preserves_old_on_failure(self, store, tmp_path, monkeypatch):
+        """If the write fails, the old embeddings file is preserved."""
+        emb_path = tmp_path / "embeddings.npz"
+        monkeypatch.setattr(storage_mod, "EMBEDDINGS_PATH", emb_path)
+
+        # Write initial embeddings
+        ids_old = np.array([1], dtype=np.int64)
+        emb_old = np.ones((1, 4), dtype=np.float32)
+        store.save_embeddings(ids_old, emb_old)
+
+        # Monkeypatch np.savez_compressed to raise mid-write
+        def _failing_save(*_args, **_kwargs):
+            msg = "disk full"
+            raise OSError(msg)
+
+        monkeypatch.setattr("numpy.savez_compressed", _failing_save)
+
+        with pytest.raises(OSError, match="disk full"):
+            store.save_embeddings(
+                np.array([99], dtype=np.int64),
+                np.zeros((1, 4), dtype=np.float32),
+            )
+
+        # Old file should still be intact
+        data = np.load(emb_path)
+        np.testing.assert_array_equal(data["ids"], ids_old)
+
+
+class TestGetCourseIdsWithDetails:
+    """Tests for CourseStore.get_course_ids_with_details()."""
+
+    def test_returns_ids_with_descriptions(self, store):
+        """Only courses with at least one non-empty description field are returned."""
+        store.upsert_courses([
+            _make_course(course_id=1, semester_key="25W", content_en="Has content"),
+            _make_course(course_id=2, semester_key="25W"),  # no descriptions
+            _make_course(course_id=3, semester_key="25W", objectives_de="Has objectives"),
+        ])
+        result = store.get_course_ids_with_details()
+        assert result == {1, 3}
+
+    def test_filters_by_semester(self, store):
+        """When semester_keys is given, only matching semesters are queried."""
+        store.upsert_courses([
+            _make_course(course_id=1, semester_key="25W", content_en="A"),
+            _make_course(course_id=2, semester_key="25S", content_en="B"),
+            _make_course(course_id=3, semester_key="24W", content_en="C"),
+        ])
+        result = store.get_course_ids_with_details(semester_keys=["25W", "24W"])
+        assert result == {1, 3}
+
+    def test_empty_db_returns_empty_set(self, store):
+        assert store.get_course_ids_with_details() == set()
+
+    def test_no_semester_filter_returns_all(self, store):
+        """Without semester_keys, all semesters are included."""
+        store.upsert_courses([
+            _make_course(course_id=1, semester_key="25W", content_de="A"),
+            _make_course(course_id=2, semester_key="24W", content_en="B"),
+        ])
+        result = store.get_course_ids_with_details()
+        assert result == {1, 2}
+
+
+class TestUpsertCourseListFields:
+    """Tests for CourseStore.upsert_course_list_fields()."""
+
+    def test_preserves_descriptions(self, store):
+        """List-only upsert must not overwrite existing descriptions."""
+        store.upsert_courses([
+            _make_course(
+                course_id=1,
+                semester_key="25W",
+                title_en="Old Title",
+                content_en="Important content",
+                objectives_de="Learning goals",
+                campus="garching",
+            ),
+        ])
+        # List-only upsert with updated title but empty descriptions
+        store.upsert_course_list_fields([
+            _make_course(
+                course_id=1,
+                semester_key="25W",
+                title_en="New Title",
+            ),
+        ])
+        row = store.get_course(1)
+        assert row["title_en"] == "New Title"
+        assert row["content_en"] == "Important content"
+        assert row["objectives_de"] == "Learning goals"
+
+    def test_preserves_campus(self, store):
+        """List-only upsert must not overwrite campus."""
+        store.upsert_courses([
+            _make_course(course_id=1, semester_key="25W", campus="garching"),
+        ])
+        store.upsert_course_list_fields([
+            _make_course(course_id=1, semester_key="25W", campus=""),
+        ])
+        row = store.get_course(1)
+        assert row["campus"] == "garching"
+
+    def test_inserts_new_course_with_empty_descriptions(self, store):
+        """A brand-new course via list-only upsert gets empty descriptions."""
+        store.upsert_course_list_fields([
+            _make_course(course_id=99, semester_key="26S", title_en="New Course"),
+        ])
+        row = store.get_course(99)
+        assert row is not None
+        assert row["title_en"] == "New Course"
+        assert row["content_en"] == ""
+        assert row["objectives_en"] == ""
+
+    def test_updates_list_level_fields(self, store):
+        """List-level fields like instructors and organisation are updated."""
+        store.upsert_courses([
+            _make_course(
+                course_id=1,
+                semester_key="25W",
+                instructors="Prof A",
+                organisation="Chair A",
+            ),
+        ])
+        store.upsert_course_list_fields([
+            _make_course(
+                course_id=1,
+                semester_key="25W",
+                instructors="Prof B",
+                organisation="Chair B",
+            ),
+        ])
+        row = store.get_course(1)
+        assert row["instructors"] == "Prof B"
+        assert row["organisation"] == "Chair B"
+
+
+class TestSetGetMeta:
+    """Tests for CourseStore.set_meta() and get_meta()."""
+
+    def test_round_trip(self, store):
+        store.set_meta("test_key", "test_value")
+        assert store.get_meta("test_key") == "test_value"
+
+    def test_get_missing_returns_none(self, store):
+        assert store.get_meta("nonexistent") is None
+
+    def test_overwrite(self, store):
+        store.set_meta("key", "old")
+        store.set_meta("key", "new")
+        assert store.get_meta("key") == "new"
+
+    def test_get_with_default(self, store):
+        assert store.get_meta("missing", default="fallback") == "fallback"
+
+
+class TestUpsertCommitParam:
+    """Tests for the commit parameter on upsert methods."""
+
+    def test_upsert_courses_no_commit(self, store):
+        """With commit=False, data is not visible after rollback."""
+        store.upsert_courses(
+            [_make_course(course_id=1, semester_key="25W")],
+            commit=False,
+        )
+        store._conn.rollback()
+        assert store.get_course(1) is None
+
+    def test_upsert_courses_default_commits(self, store):
+        """Default commit=True makes data visible immediately."""
+        store.upsert_courses([_make_course(course_id=1, semester_key="25W")])
+        assert store.get_course(1) is not None
+
+    def test_upsert_list_fields_no_commit(self, store):
+        """With commit=False, list-only upsert data is not visible after rollback."""
+        store.upsert_course_list_fields(
+            [_make_course(course_id=1, semester_key="25W")],
+            commit=False,
+        )
+        store._conn.rollback()
+        assert store.get_course(1) is None
+

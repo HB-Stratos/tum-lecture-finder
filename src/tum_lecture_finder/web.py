@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-import logging
+import os
 import re
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
 
 import httpx
+import structlog
+from asgi_correlation_id import CorrelationIdMiddleware, correlation_id
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -17,8 +20,10 @@ from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from starlette.responses import JSONResponse, Response
+from structlog.contextvars import bind_contextvars, clear_contextvars
 
 from tum_lecture_finder.config import DB_PATH, format_semester
+from tum_lecture_finder.logging_config import setup_logging
 from tum_lecture_finder.search import (
     fulltext_search,
     hybrid_search,
@@ -31,15 +36,32 @@ if TYPE_CHECKING:
 
     from tum_lecture_finder.models import SearchResult
 
-log = logging.getLogger(__name__)
+log: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
 # ── Paths ──────────────────────────────────────────────────────────────────
 _HERE = Path(__file__).parent
 _TEMPLATES_DIR = _HERE / "templates"
 _STATIC_DIR = _HERE / "static"
 
-# ── Rate limiter ───────────────────────────────────────────────────────────
-limiter = Limiter(key_func=get_remote_address)
+
+_TRUST_PROXY = os.environ.get("TLF_TRUST_PROXY", "0") == "1"
+_PRELOAD_MODEL = os.environ.get("TLF_PRELOAD_MODEL", "1") == "1"
+
+
+def _real_ip(request: Request) -> str:
+    """Return client IP, optionally trusting X-Forwarded-For from a proxy."""
+    if _TRUST_PROXY:
+        # Only trust X-Forwarded-For if explicitly enabled
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            return xff.split(",")[0].strip()
+    return get_remote_address(request)
+
+
+# application_limits caps the *total* request rate across all IPs so that a
+# distributed flood (many IPs, each under the per-IP ceiling) still gets
+# throttled at the server level.
+limiter = Limiter(key_func=_real_ip, application_limits=["1000/minute"])
 
 # ── Global store (initialised on startup) ──────────────────────────────────
 _store: CourseStore | None = None
@@ -53,18 +75,163 @@ def _get_store() -> CourseStore:
     return _store
 
 
+_UPDATE_CRON = os.environ.get("TLF_UPDATE_CRON", "")
+_UPDATE_SEMESTERS = int(os.environ.get("TLF_UPDATE_SEMESTERS", "4"))
+_FULL_UPDATE_EVERY = max(1, int(os.environ.get("TLF_FULL_UPDATE_EVERY", "7")))
+_update_run_count = -1  # first increment yields 0 → 0 % N == 0 → full run
+_update_running = False
+
+
+async def _scheduled_update() -> None:  # noqa: PLR0915
+    """Run an incremental or full DB update in the background (APScheduler).
+
+    Two-tier scheduling:
+    - Every run: fetches course lists for all configured semesters.
+    - Every Nth run (``TLF_FULL_UPDATE_EVERY``): fetches details for ALL courses.
+    - Other runs: fetches details only for current/future semester courses and
+      new courses not yet in the DB.
+
+    Errors are caught and logged so the scheduler keeps running.
+    """
+    global _update_run_count, _update_running  # noqa: PLW0603
+    global _type_counts_cache, _campus_counts_cache  # noqa: PLW0603
+
+    sched_log = structlog.get_logger("tlf.scheduler")
+
+    if _update_running:
+        sched_log.warning("scheduled_update_skipped", reason="previous run still in progress")
+        return
+    _update_running = True
+
+    try:
+        from datetime import UTC, datetime
+
+        from tum_lecture_finder.config import (
+            current_semester_key,
+            is_current_or_future_semester,
+        )
+        from tum_lecture_finder.fetcher import fetch_courses, fetch_semester_list
+        from tum_lecture_finder.search import (
+            build_embeddings,
+            invalidate_course_cache,
+        )
+
+        _update_run_count += 1
+        is_full = (_update_run_count % _FULL_UPDATE_EVERY == 0)
+        tier = "full" if is_full else "incremental"
+
+        store = _get_store()
+
+        # Resolve which semesters to fetch
+        all_semesters = await fetch_semester_list()
+        semester_ids = [s["id"] for s in all_semesters[:_UPDATE_SEMESTERS]]
+        semester_keys = [s["key"] for s in all_semesters[:_UPDATE_SEMESTERS]]
+
+        sched_log.info(
+            "scheduled_update_start",
+            run_count=_update_run_count,
+            tier=tier,
+            semesters=semester_keys,
+        )
+
+        # Build skip set for incremental runs
+        skip_ids: set[int] | None = None
+        if not is_full:
+            current = current_semester_key()
+            past_keys = [k for k in semester_keys if not is_current_or_future_semester(k, current)]
+            if past_keys:
+                skip_ids = store.get_course_ids_with_details(past_keys)
+                sched_log.info(
+                    "detail_skip_summary",
+                    past_semesters=past_keys,
+                    skip_count=len(skip_ids),
+                )
+
+        building_cache = store.get_building_cache()
+        result = await fetch_courses(
+            semester_ids=semester_ids,
+            building_cache=building_cache,
+            skip_detail_ids=skip_ids,
+        )
+
+        all_courses = result.detailed + result.list_only
+        if all_courses:
+            # Upsert in a single transaction
+            store.upsert_courses(result.detailed, commit=False)
+            if result.list_only:
+                store.upsert_course_list_fields(result.list_only, commit=False)
+            store.commit()
+
+            store.compute_other_semesters()
+            store.upsert_building_cache(building_cache)
+
+            # Invalidate caches BEFORE rebuilding embeddings
+            invalidate_course_cache()
+            build_embeddings(store)
+
+            # Invalidate web-layer caches
+            _type_counts_cache = None
+            _campus_counts_cache = None
+
+            # Persist update stats
+            store.set_meta("last_update_time", datetime.now(UTC).isoformat())
+            store.set_meta("last_update_tier", tier)
+            store.set_meta("last_update_detailed", str(len(result.detailed)))
+            store.set_meta("last_update_skipped", str(len(result.list_only)))
+            store.set_meta("last_update_semesters", ",".join(semester_keys))
+
+            sched_log.info(
+                "scheduled_update_done",
+                courses_detailed=len(result.detailed),
+                courses_skipped=len(result.list_only),
+                total_stored=len(all_courses),
+            )
+        else:
+            sched_log.warning("scheduled_update_no_courses")
+    except Exception:  # noqa: BLE001
+        sched_log.exception("scheduled_update_error")
+    finally:
+        _update_running = False
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
-    """Open DB on startup, preload model, close on shutdown."""
+    """Open DB on startup, configure logging, preload model, close on shutdown."""
+    setup_logging()
     global _store  # noqa: PLW0603
     _store = CourseStore(check_same_thread=False)
-    # Preload the sentence-transformers model so first search is fast
-    log.info("Pre-loading semantic search model…")
-    from tum_lecture_finder.search import _get_model  # noqa: PLC0415
+    # Preload can be disabled for faster/smaller container startup.
+    if _PRELOAD_MODEL:
+        log.info("Pre-loading semantic search model...")
+        from tum_lecture_finder.search import _get_model
 
-    _get_model()
-    log.info("Model loaded.")
+        _get_model()
+        log.info("Model loaded.")
+    else:
+        log.info("Skipping model preload (TLF_PRELOAD_MODEL=0).")
+
+    # Start background scheduler if TLF_UPDATE_CRON is set
+    scheduler = None
+    if _UPDATE_CRON:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from apscheduler.triggers.cron import CronTrigger
+
+        scheduler = AsyncIOScheduler()
+        trigger = CronTrigger.from_crontab(_UPDATE_CRON)
+        scheduler.add_job(_scheduled_update, trigger)
+        scheduler.start()
+        log.info(
+            "scheduler_started",
+            cron=_UPDATE_CRON,
+            recent_semesters=_UPDATE_SEMESTERS,
+            full_update_every=_FULL_UPDATE_EVERY,
+        )
+
     yield
+
+    if scheduler is not None:
+        scheduler.shutdown(wait=False)
+        log.info("scheduler_stopped")
     if _store is not None:
         _store.close()
         _store = None
@@ -81,16 +248,63 @@ app = FastAPI(
 
 app.state.limiter = limiter
 
+# Attach correlation-id middleware (generates / forwards X-Request-ID header)
+app.add_middleware(CorrelationIdMiddleware)
+
 
 @app.exception_handler(RateLimitExceeded)
 async def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> Response:  # noqa: ARG001
+    log.warning(
+        "rate_limit_exceeded",
+        path=request.url.path,
+        client_ip=_real_ip(request),
+    )
     return JSONResponse(
         status_code=429,
         content={"detail": "Rate limit exceeded. Please slow down."},
+        headers={"Retry-After": "60"},
     )
 
 
+# Request logging middleware — logs every request with method, path, status, latency
+@app.middleware("http")
+async def _log_requests(
+    request: Request,
+    call_next: Callable[[Request], Any],
+) -> Response:
+    """Log each request with structured fields and bind a correlation ID."""
+    clear_contextvars()
+    req_id = correlation_id.get()
+    if req_id:
+        bind_contextvars(request_id=req_id)
+
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        log.exception(
+            "unhandled_exception",
+            method=request.method,
+            path=request.url.path,
+        )
+        raise
+    duration_ms = (time.perf_counter() - started) * 1000
+
+    log.info(
+        "request",
+        method=request.method,
+        path=request.url.path,
+        status=response.status_code,
+        duration_ms=round(duration_ms, 1),
+        client_ip=_real_ip(request),
+    )
+    return response
+
+
 # Security headers middleware
+_HSTS_PRELOAD = os.environ.get("TLF_HSTS_PRELOAD", "0") == "1"
+
+
 @app.middleware("http")
 async def _security_headers(
     request: Request,
@@ -102,7 +316,11 @@ async def _security_headers(
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-    # CSP allows inline styles for Dark Reader compatibility
+    hsts = "max-age=63072000; includeSubDomains"
+    if _HSTS_PRELOAD:
+        hsts += "; preload"
+    response.headers["Strict-Transport-Security"] = hsts
+    # Hardened CSP: no object/embed, no base-uri, restrict form-action
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
         "script-src 'self'; "
@@ -110,8 +328,15 @@ async def _security_headers(
         "img-src 'self' data:; "
         "font-src 'self'; "
         "connect-src 'self'; "
-        "frame-ancestors 'none'"
+        "frame-ancestors 'none'; "
+        "object-src 'none'; "
+        "base-uri 'none'; "
+        "form-action 'self'"
     )
+    # Remove the default 'server: uvicorn' header to avoid revealing the
+    # tech stack to potential attackers.
+    if "server" in response.headers:
+        del response.headers["server"]
     return response
 
 
@@ -181,7 +406,7 @@ def _extract_time_range(date_entry: dict[str, Any]) -> str:
     time_to = date_entry.get("timestampTo", {}).get("value", "")
     if time_from and time_to:
         try:
-            from datetime import datetime  # noqa: PLC0415
+            from datetime import datetime
 
             tf = datetime.fromisoformat(time_from)
             tt = datetime.fromisoformat(time_to)
@@ -301,12 +526,14 @@ def _parse_appointments(data: dict[str, Any]) -> list[dict[str, str]]:
             if key in seen:
                 continue
             seen.add(key)
-            appointments.append({
-                "weekday": weekday,
-                "time": time_range,
-                "room": room,
-                "room_link": _extract_room_link(room),
-            })
+            appointments.append(
+                {
+                    "weekday": weekday,
+                    "time": time_range,
+                    "room": room,
+                    "room_link": _extract_room_link(room),
+                }
+            )
     return appointments
 
 
@@ -359,8 +586,16 @@ async def favicon() -> Response:
 
 
 def _db_last_updated() -> str:
-    """Return the last-modified timestamp of the SQLite DB file."""
-    from datetime import UTC, datetime  # noqa: PLC0415
+    """Return the last-update timestamp, preferring meta table over file mtime."""
+    from datetime import UTC, datetime
+
+    try:
+        store = _get_store()
+        meta_time = store.get_meta("last_update_time")
+        if meta_time:
+            return meta_time
+    except RuntimeError:
+        pass
 
     try:
         mtime = DB_PATH.stat().st_mtime
@@ -368,6 +603,27 @@ def _db_last_updated() -> str:
         return dt.strftime("%Y-%m-%d %H:%M UTC")
     except OSError:
         return "unknown"
+
+
+def _get_update_info() -> dict[str, Any] | None:
+    """Return last scheduled update stats from the meta table, or None."""
+    try:
+        store = _get_store()
+    except RuntimeError:
+        return None
+
+    time = store.get_meta("last_update_time")
+    if not time:
+        return None
+
+    semesters_csv = store.get_meta("last_update_semesters", default="")
+    return {
+        "time": time,
+        "tier": store.get_meta("last_update_tier", default="unknown"),
+        "courses_detailed": int(store.get_meta("last_update_detailed", default="0")),
+        "courses_skipped": int(store.get_meta("last_update_skipped", default="0")),
+        "semesters": [s for s in semesters_csv.split(",") if s],
+    }
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -447,6 +703,7 @@ async def stats_page(request: Request) -> HTMLResponse:
             "type_counts": type_counts,
             "campus_counts": campus_counts,
             "last_updated": _db_last_updated(),
+            "update_info": _get_update_info(),
         },
     )
 
@@ -467,7 +724,7 @@ async def api_search(  # noqa: PLR0913
     semester: Annotated[str | None, Query(max_length=10)] = None,
     mode: Annotated[str, Query(pattern="^(keyword|semantic|hybrid)$")] = "hybrid",
     limit: Annotated[int, Query(ge=1, le=_MAX_LIMIT)] = 20,
-    offset: Annotated[int, Query(ge=0, le=10000)] = 0,
+    offset: Annotated[int, Query(ge=0, le=2000)] = 0,
 ) -> dict[str, Any]:
     """Search courses by keyword."""
     store = _get_store()
@@ -478,7 +735,9 @@ async def api_search(  # noqa: PLR0913
     # Fetch extra results to allow post-filtering by semester and offset pagination.
     # FTS and semantic both handle large limits efficiently (FTS via SQL LIMIT,
     # semantic processes all embeddings regardless), so we can be generous.
-    fetch_limit = limit + offset + 200
+    # Cap at 2500 to prevent a large offset from causing the DB to scan and
+    # materialise thousands of rows it will immediately discard.
+    fetch_limit = min(limit + offset + 200, 2500)
 
     if mode == "keyword":
         results = fulltext_search(
@@ -548,7 +807,7 @@ async def api_course_schedule(
     course_id: int,
 ) -> dict[str, Any]:
     """Fetch live schedule/room data from TUMonline for a course."""
-    from tum_lecture_finder.config import COURSE_GROUPS_URL  # noqa: PLC0415
+    from tum_lecture_finder.config import COURSE_GROUPS_URL
 
     url = f"{COURSE_GROUPS_URL}/{course_id}"
     try:
@@ -559,10 +818,24 @@ async def api_course_schedule(
             resp = await client.get(url)
             resp.raise_for_status()
             data = resp.json()
-    except httpx.HTTPError:
-        return {"appointments": []}
+    except httpx.HTTPError as exc:
+        log.warning("schedule_fetch_error", course_id=course_id, error=str(exc))
+        return {"appointments": [], "error": "TUMonline unavailable"}
 
     return {"appointments": _parse_appointments(data)}
+
+
+@app.get("/health")
+async def health() -> dict[str, str]:
+    """Lightweight health check for Docker / reverse-proxy probing.
+
+    Returns HTTP 200 when the application is running and the database is
+    accessible.  Does not require authentication or rate limiting.
+    """
+    store = _get_store()
+    # A cheap query to verify the DB connection is alive
+    store.course_count()
+    return {"status": "ok", "db": "ok"}
 
 
 @app.get("/api/stats")
@@ -575,12 +848,18 @@ async def api_stats(request: Request) -> dict[str, Any]:  # noqa: ARG001
     type_counts = _get_type_counts(store)
     campus_counts = _get_campus_counts(store)
 
-    return {
+    result: dict[str, Any] = {
         "total_courses": total,
-        "semesters": [{"key": k, "display": format_semester(k), "count": c} for k, c in semesters],
+        "semesters": [
+            {"key": k, "display": format_semester(k), "count": c} for k, c in semesters
+        ],
         "course_types": type_counts,
         "campuses": campus_counts,
     }
+    update_info = _get_update_info()
+    if update_info:
+        result["last_update"] = update_info
+    return result
 
 
 @app.get("/api/filters")
@@ -601,28 +880,34 @@ async def api_filters(request: Request) -> dict[str, Any]:  # noqa: ARG001
 
 # ── Internal helpers ───────────────────────────────────────────────────────
 
-_type_counts_cache: tuple[int, list[dict[str, Any]]] | None = None
-_campus_counts_cache: tuple[int, list[dict[str, Any]]] | None = None
+# Cache entries: (expiry_monotonic_time, data).  TTL prevents stale counts
+# after a scheduled DB update in a long-running container.
+_CACHE_TTL = 3600.0  # 1 hour
+
+_type_counts_cache: tuple[float, list[dict[str, Any]]] | None = None
+_campus_counts_cache: tuple[float, list[dict[str, Any]]] | None = None
 
 
 def _get_type_counts(store: CourseStore) -> list[dict[str, Any]]:
-    """Get course type distribution (cached per store instance)."""
+    """Get course type distribution, cached with a 1-hour TTL."""
     global _type_counts_cache  # noqa: PLW0603
-    if _type_counts_cache is None or _type_counts_cache[0] != id(store):
+    now = time.monotonic()
+    if _type_counts_cache is None or now >= _type_counts_cache[0]:
         data = [{"type": t, "count": c} for t, c in store.type_counts()]
-        _type_counts_cache = (id(store), data)
+        _type_counts_cache = (now + _CACHE_TTL, data)
     return _type_counts_cache[1]
 
 
 def _get_campus_counts(store: CourseStore) -> list[dict[str, Any]]:
-    """Get campus distribution (cached per store instance)."""
+    """Get campus distribution, cached with a 1-hour TTL."""
     global _campus_counts_cache  # noqa: PLW0603
-    if _campus_counts_cache is None or _campus_counts_cache[0] != id(store):
+    now = time.monotonic()
+    if _campus_counts_cache is None or now >= _campus_counts_cache[0]:
         data = [
             {"campus": ca, "display": _campus_display_name(ca), "count": c}
             for ca, c in store.campus_counts()
         ]
-        _campus_counts_cache = (id(store), data)
+        _campus_counts_cache = (now + _CACHE_TTL, data)
     return _campus_counts_cache[1]
 
 
@@ -634,6 +919,6 @@ def run_server(host: str = "127.0.0.1", port: int = 8000) -> None:
         port: Listen port.
 
     """
-    import uvicorn  # noqa: PLC0415
+    import uvicorn
 
-    uvicorn.run(app, host=host, port=port)
+    uvicorn.run(app, host=host, port=port, server_header=False)

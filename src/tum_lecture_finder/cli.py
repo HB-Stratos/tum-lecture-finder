@@ -24,10 +24,7 @@ from rich.progress import (
 from rich.rule import Rule
 from rich.table import Table
 
-from tum_lecture_finder.config import (
-    DEFAULT_RECENT_SEMESTERS,
-    format_semester,
-)
+from tum_lecture_finder.config import format_semester, semester_sort_key
 from tum_lecture_finder.storage import CourseStore
 
 console = Console()
@@ -49,6 +46,46 @@ def _make_progress() -> Progress:
         TimeElapsedColumn(),
         console=console,
     )
+
+
+def _select_update_window(
+    all_sems: list[dict],
+    current: str | None = None,
+) -> tuple[list[int], list[str]]:
+    """Return (ids, keys) for semesters within 2 years of today.
+
+    Selects up to 4 semesters before and up to 4 semesters after the current
+    semester (inclusive), giving a window of at most 9 semesters.
+
+    Args:
+        all_sems: Full semester list from TUMonline (any order).
+        current: Current semester key override (e.g. ``"25W"``).  When
+            ``None``, :func:`~tum_lecture_finder.config.current_semester_key`
+            is called automatically.
+
+    Returns:
+        Tuple of ``(semester_ids, semester_keys)`` sorted ascending by key.
+
+    """
+    if current is None:
+        from tum_lecture_finder.config import current_semester_key
+
+        current = current_semester_key()
+
+    # Sort ascending using century-aware key so 1990s semesters precede 2000s
+    sorted_sems = sorted(all_sems, key=lambda s: semester_sort_key(s.get("key", "0S")))
+
+    # Find the last semester whose sort key <= current's sort key
+    current_sort = semester_sort_key(current)
+    current_idx = 0
+    for i, s in enumerate(sorted_sems):
+        if semester_sort_key(s.get("key", "0S")) <= current_sort:
+            current_idx = i
+
+    start = max(0, current_idx - 4)
+    end = min(len(sorted_sems), current_idx + 5)  # exclusive
+    selected = sorted_sems[start:end]
+    return [s["id"] for s in selected], [s["key"] for s in selected]
 
 
 @click.group()
@@ -98,10 +135,7 @@ def main() -> None:
     "recent_n",
     type=int,
     default=None,
-    help=(
-        f"Number of most-recent semesters to fetch (default: {DEFAULT_RECENT_SEMESTERS}).  "
-        "Ignored when --semester is given."
-    ),
+    help=("Number of most-recent semesters to fetch.  Ignored when --semester is given."),
 )
 @click.option(
     "--verbose",
@@ -135,7 +169,7 @@ def update(  # noqa: PLR0915
       tlf update -c 10             # with 10 parallel requests
       tlf update -v                # verbose output
     """
-    from tum_lecture_finder.fetcher import (  # noqa: PLC0415
+    from tum_lecture_finder.fetcher import (
         fetch_courses,
         fetch_semester_list,
         resolve_semester_ids,
@@ -161,9 +195,11 @@ def update(  # noqa: PLR0915
         sem_labels = ", ".join(s["key"] for s in all_sems[:recent_n])
         console.print(f"Semesters: [cyan]{sem_labels}[/cyan]")
     else:
-        console.print(
-            f"\n[bold]Fetching last {DEFAULT_RECENT_SEMESTERS} semesters from TUMonline...[/bold]"
-        )
+        console.print("\n[bold]Fetching 2-year window from TUMonline...[/bold]")
+        all_sems = asyncio.run(fetch_semester_list())
+        semester_ids, sem_keys = _select_update_window(all_sems)
+        sem_labels = ", ".join(sem_keys)
+        console.print(f"Semesters: [cyan]{sem_labels}[/cyan]")
 
     with _make_progress() as progress:
         list_task: TaskID = progress.add_task("Course list", total=100)
@@ -187,7 +223,7 @@ def update(  # noqa: PLR0915
             if verbose:
                 progress.console.print(f"  [dim]Fetched semester [cyan]{sem_key}[/cyan][/dim]")
 
-        courses = asyncio.run(
+        result = asyncio.run(
             fetch_courses(
                 semester_ids=semester_ids,
                 concurrency=concurrency,
@@ -197,6 +233,7 @@ def update(  # noqa: PLR0915
                 on_semester=_on_semester,
             )
         )
+        courses = result.detailed + result.list_only
 
     if courses:
         semesters_found = {c.semester_key for c in courses}
@@ -216,7 +253,7 @@ def update(  # noqa: PLR0915
         # encode with a visible Rich progress bar.
         console.print("[dim]Rebuilding semantic search index...[/dim]")
         with _QuietModelLoad(banner=False):
-            from tum_lecture_finder.search import (  # noqa: PLC0415
+            from tum_lecture_finder.search import (
                 build_embeddings,
                 ensure_model_loaded,
             )
@@ -303,7 +340,7 @@ def search(
       tlf search "Regelungstechnik" --mode keyword
       tlf search "PCB design" --campus garching --type PR
     """
-    from tum_lecture_finder.search import (  # noqa: PLC0415
+    from tum_lecture_finder.search import (
         fulltext_search,
         hybrid_search,
         semantic_search,
@@ -482,7 +519,7 @@ def info(course_id: int) -> None:
         console.print(f"[red]Course {course_id} not found in local database.[/red]")
         sys.exit(1)
 
-    from tum_lecture_finder.storage import row_to_course  # noqa: PLC0415
+    from tum_lecture_finder.storage import row_to_course
 
     c = row_to_course(row)
 
@@ -569,7 +606,7 @@ def build_index() -> None:
     console.print(f"[bold]Encoding {total} courses...[/bold]")
 
     with _QuietModelLoad():
-        from tum_lecture_finder.search import (  # noqa: PLC0415
+        from tum_lecture_finder.search import (
             build_embeddings,
             ensure_model_loaded,
         )
@@ -618,8 +655,196 @@ def serve(host: str, port: int) -> None:
     console.print("[bold]Starting web server...[/bold]")
     console.print(f"  [cyan]http://{host}:{port}[/cyan]")
     console.print(f"  {total} courses available")
+    if host in ("0.0.0.0", "::") and not os.environ.get("TLF_NO_BIND_WARNING"):  # noqa: S104
+        console.print(
+            "[yellow][bold]Warning:[/bold] Listening on 0.0.0.0 exposes "
+            "the server to your network. "
+            "Use a reverse proxy with TLS and set "
+            "TLF_TRUST_PROXY=1 if you need real client IPs.\n"
+            "See the README secure deployment checklist.\n[/yellow]"
+        )
     console.print("[dim]Press Ctrl+C to stop.[/dim]\n")
 
-    from tum_lecture_finder.web import run_server  # noqa: PLC0415
+    from tum_lecture_finder.web import run_server
 
     run_server(host=host, port=port)
+
+
+# ── probe-semesters ─────────────────────────────────────────────────────────
+
+
+@main.command("probe-semesters")
+@click.option(
+    "--fetch-future",
+    is_flag=True,
+    default=False,
+    help=(
+        "Fetch all future semesters returned by TUMonline "
+        "(up to 3 years / 6 semesters ahead of today).  "
+        "This actually downloads course data."
+    ),
+)
+def probe_semesters(*, fetch_future: bool) -> None:
+    """List all semesters known to TUMonline (past, current, and future).
+
+    Queries the TUMonline API for its full semester list and labels each
+    entry as past, current, or future relative to today.  This helps you
+    determine how far ahead course data is available.
+
+    \b
+    Examples:
+      tlf probe-semesters
+      tlf probe-semesters --fetch-future
+    """
+    from tum_lecture_finder.config import current_semester_key
+    from tum_lecture_finder.fetcher import fetch_semester_list
+
+    all_sems = asyncio.run(fetch_semester_list())
+
+    if not all_sems:
+        console.print("[yellow]No semesters returned by the API.[/yellow]")
+        return
+
+    current = current_semester_key()
+    table = _make_semester_table(all_sems, current)
+    console.print(table)
+
+    future_sems = [s for s in all_sems if _semester_is_future(s["key"], current)][:6]
+
+    if future_sems:
+        keys = ", ".join(s["key"] for s in future_sems)
+        console.print(f"\n[cyan]{len(future_sems)}[/cyan] future semester(s) available: {keys}")
+    else:
+        console.print("\n[dim]No future semesters available yet.[/dim]")
+
+    if fetch_future:
+        _probe_fetch_future(future_sems)
+
+
+def _probe_fetch_future(future_sems: list[dict]) -> None:
+    """Fetch and store courses for future semesters found by probe-semesters.
+
+    Args:
+        future_sems: List of semester dicts (with ``"id"`` and ``"key"`` keys)
+            to fetch, already limited to at most 6 entries.
+
+    """
+    if not future_sems:
+        console.print("[yellow]No future semesters to fetch.[/yellow]")
+        return
+
+    from tum_lecture_finder.fetcher import fetch_courses
+
+    console.print(f"\n[bold]Fetching {len(future_sems)} future semester(s)...[/bold]")
+
+    future_ids = [s["id"] for s in future_sems]
+    store = CourseStore()
+    building_cache = store.get_building_cache()
+
+    with _make_progress() as progress:
+        list_task: TaskID = progress.add_task("Course list", total=100)
+        detail_task: TaskID = progress.add_task("Descriptions", total=None, visible=False)
+        _lt, _dt = list_task, detail_task
+
+        def _on_list(fetched: int, total: int, _t: TaskID = _lt) -> None:
+            progress.update(_t, completed=fetched, total=total)
+
+        def _on_detail(fetched: int, total: int, _t: TaskID = _dt) -> None:
+            if not progress.tasks[_t].visible:
+                progress.update(_t, visible=True, total=total)
+            progress.update(_t, completed=fetched, total=total)
+
+        result = asyncio.run(
+            fetch_courses(
+                semester_ids=future_ids,
+                building_cache=building_cache,
+                on_list_progress=_on_list,
+                on_detail_progress=_on_detail,
+            )
+        )
+        courses = result.detailed + result.list_only
+
+    if courses:
+        count = store.upsert_courses(courses)
+        store.compute_other_semesters()
+        store.upsert_building_cache(building_cache)
+        console.print(f"[green]Done.[/green] {count} future courses stored.")
+        _rebuild_embeddings(store)
+    else:
+        console.print("[yellow]No courses found in future semesters.[/yellow]")
+
+    store.close()
+
+
+def _rebuild_embeddings(store: CourseStore) -> None:
+    """Rebuild the semantic embedding index for a given store.
+
+    Args:
+        store: The :class:`CourseStore` whose courses to embed.
+
+    """
+    from tum_lecture_finder.search import build_embeddings, ensure_model_loaded
+
+    console.print("[dim]Rebuilding semantic index...[/dim]")
+    with _QuietModelLoad(banner=False):
+        ensure_model_loaded()
+    with _make_progress() as emb_progress:
+        emb_task = emb_progress.add_task("Embeddings", total=None)
+
+        def _on_emb(done: int, total: int) -> None:
+            emb_progress.update(emb_task, completed=done, total=total)
+
+        build_embeddings(store, on_progress=_on_emb)
+    console.print("[green]Semantic index ready.[/green]")
+
+
+def _semester_is_future(key: str, current: str) -> bool:
+    """Return True if *key* represents a semester after *current*.
+
+    Uses century-aware comparison so 1990s keys (``"99W"``, ``"98S"``) are
+    not mistakenly classified as future relative to a 2020s current semester.
+
+    Args:
+        key: Semester key to test (e.g. ``"26S"``).
+        current: Current semester key (e.g. ``"25W"``).
+
+    Returns:
+        True if the semester is in the future.
+
+    """
+    return semester_sort_key(key) > semester_sort_key(current)
+
+
+def _make_semester_table(semesters: list[dict], current: str) -> Table:
+    """Build a Rich table listing semesters with past/current/future labels.
+
+    Args:
+        semesters: List of semester dicts from TUMonline.
+        current: The current semester key.
+
+    Returns:
+        A Rich :class:`Table`.
+
+    """
+    from tum_lecture_finder.config import format_semester
+
+    table = Table(title="TUMonline Semesters", show_lines=False)
+    table.add_column("Key", style="cyan", width=6)
+    table.add_column("Name", ratio=1)
+    table.add_column("Status", width=10)
+
+    for s in sorted(semesters, key=lambda x: semester_sort_key(x.get("key", "0S")), reverse=True):
+        key = s.get("key", "")
+        try:
+            name = format_semester(key)
+        except (ValueError, IndexError):
+            name = key
+        if key == current:
+            status = "[bold green]current[/bold green]"
+        elif _semester_is_future(key, current):
+            status = "[yellow]future[/yellow]"
+        else:
+            status = "[dim]past[/dim]"
+        table.add_row(key, name, status)
+
+    return table

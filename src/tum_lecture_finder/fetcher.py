@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import random
 import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import httpx
+import structlog
 
 from tum_lecture_finder.config import (
     COURSE_GROUPS_URL,
@@ -23,7 +23,21 @@ from tum_lecture_finder.models import Course
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-log = logging.getLogger(__name__)
+log: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
+
+
+class FetchResult(NamedTuple):
+    """Return type for :func:`fetch_courses`.
+
+    Separates courses that received full detail fetches from those that were
+    skipped (incremental update mode).
+    """
+
+    detailed: list[Course]
+    """Courses whose descriptions/details were fetched from the API."""
+    list_only: list[Course]
+    """Courses whose detail fetch was skipped (list-level data only)."""
+
 
 _MAX_RETRIES = 3
 _RETRY_BACKOFF = (2.0, 4.0, 8.0)
@@ -238,7 +252,7 @@ def _parse_campus_from_subtext(subtext: str) -> str:
     if not subtext:
         return ""
     parts = subtext.split(", ", 1)
-    if len(parts) == 2 and parts[0] and parts[0][0].islower():  # noqa: PLR2004
+    if len(parts) == 2 and parts[0] and parts[0][0:1].islower():  # noqa: PLR2004
         return parts[0]
     # Non-standard location: take text before first " (" and lowercase it
     paren_idx = subtext.find(" (")
@@ -272,7 +286,7 @@ async def _resolve_building_campus(
         )
         resp.raise_for_status()
     except httpx.HTTPError:
-        log.debug("NavigaTUM lookup failed for building %s", building_code)
+        log.debug("navigatum_lookup_failed", building_code=building_code)
         return ""
 
     data = resp.json()
@@ -371,7 +385,7 @@ async def _fetch_course_list(
         return "".join(parts)
 
     # First request to learn total count
-    resp = await client.get(_build_url(skip))
+    resp = await _get_with_retry(client, _build_url(skip))
     resp.raise_for_status()
     data = resp.json()
     total = data.get("totalCount", 0)
@@ -384,7 +398,7 @@ async def _fetch_course_list(
     # Fetch remaining pages
     while len(courses) < total:
         skip = len(courses)
-        resp = await client.get(_build_url(skip))
+        resp = await _get_with_retry(client, _build_url(skip))
         resp.raise_for_status()
         data = resp.json()
         courses.extend(_parse_course_list_item(item) for item in data.get("courses", []))
@@ -433,7 +447,7 @@ async def _fetch_course_detail_raw(
     try:
         resp = await _get_with_retry(client, f"{COURSES_URL}/{course_id}")
     except httpx.HTTPError as exc:
-        log.warning("Failed to fetch details for course %s (%s)", course_id, exc)
+        log.warning("detail_fetch_failed", course_id=course_id, error=str(exc))
         return None
     else:
         return resp.json()
@@ -476,7 +490,7 @@ async def _fetch_course_groups_raw(
     try:
         resp = await _get_with_retry(client, f"{COURSE_GROUPS_URL}/{course_id}")
     except httpx.HTTPError:
-        log.debug("No course groups for course %s", course_id)
+        log.debug("course_groups_fetch_failed", course_id=course_id)
         return None
     else:
         return resp.json()
@@ -487,20 +501,36 @@ async def _fetch_details(
     courses: list[Course],
     concurrency: int,
     on_detail_progress: Callable[[int, int], None] | None,
-) -> dict[int, list[str]]:
-    """Fetch course details and room data for all courses concurrently.
+    skip_ids: set[int] | None = None,
+) -> tuple[dict[int, list[str]], list[Course], list[Course]]:
+    """Fetch course details and room data, optionally skipping known courses.
 
     Args:
         client: An ``httpx.AsyncClient`` instance.
         courses: Courses to enrich (mutated in-place with descriptions).
         concurrency: Max parallel requests.
         on_detail_progress: Callback ``(fetched, total)`` for progress.
+        skip_ids: Course IDs to skip detail fetching for (incremental mode).
 
     Returns:
-        Mapping of course_id → list of building codes extracted from rooms.
+        Tuple of ``(course_buildings, detailed_courses, skipped_courses)``.
 
     """
-    total = len(courses)
+    if skip_ids:
+        to_fetch = [c for c in courses if c.course_id not in skip_ids]
+        skipped = [c for c in courses if c.course_id in skip_ids]
+    else:
+        to_fetch = courses
+        skipped = []
+
+    log.info(
+        "detail_fetch_plan",
+        total=len(courses),
+        skipped=len(skipped),
+        to_fetch=len(to_fetch),
+    )
+
+    total = len(to_fetch)
     sem = asyncio.Semaphore(concurrency)
     done_count = 0
     course_buildings: dict[int, list[str]] = {}
@@ -525,8 +555,8 @@ async def _fetch_details(
     if on_detail_progress:
         on_detail_progress(0, total)
 
-    await asyncio.gather(*[_fetch_and_merge(c) for c in courses])
-    return course_buildings
+    await asyncio.gather(*[_fetch_and_merge(c) for c in to_fetch])
+    return course_buildings, to_fetch, skipped
 
 
 async def _assign_campuses(
@@ -554,9 +584,9 @@ async def _assign_campuses(
 
     if unknown_codes:
         log.info(
-            "Resolving %d/%d building codes via NavigaTUM…",
-            len(unknown_codes),
-            len(all_codes),
+            "resolving_building_codes",
+            unknown=len(unknown_codes),
+            total=len(all_codes),
         )
         resolved = await _resolve_all_buildings(client, unknown_codes)
         building_cache.update(resolved)
@@ -581,11 +611,12 @@ async def fetch_courses(  # noqa: PLR0913
     semester_ids: list[int] | None = None,
     concurrency: int = 20,
     building_cache: dict[str, str] | None = None,
+    skip_detail_ids: set[int] | None = None,
     on_list_progress: Callable[[int, int], None] | None = None,
     on_detail_progress: Callable[[int, int], None] | None = None,
     on_resolve_progress: Callable[[int, int], None] | None = None,
     on_semester: Callable[[str], None] | None = None,
-) -> list[Course]:
+) -> FetchResult:
     """Fetch courses (optionally from multiple semesters) including descriptions.
 
     When *semester_ids* is ``None`` the most recent semesters (controlled by
@@ -601,13 +632,15 @@ async def fetch_courses(  # noqa: PLR0913
         semester_ids: Numeric term ids to fetch.  ``None`` = auto-detect recent.
         concurrency: Max parallel detail requests.
         building_cache: Mutable dict of building_code → campus (updated in-place).
+        skip_detail_ids: Course IDs to skip detail fetching for (incremental mode).
+            Campus resolution is also skipped for these courses.
         on_list_progress: Callback ``(fetched, total)`` for the list phase.
         on_detail_progress: Callback ``(fetched, total)`` for the detail phase.
         on_resolve_progress: Callback ``(resolved, total)`` for building resolution.
         on_semester: Callback ``(semester_key)`` fired when a semester list starts.
 
     Returns:
-        Fully populated list of :class:`Course` objects.
+        A :class:`FetchResult` with ``detailed`` and ``list_only`` course lists.
 
     """
     if building_cache is None:
@@ -657,23 +690,24 @@ async def fetch_courses(  # noqa: PLR0913
             on_list_progress(len(courses), len(courses))
 
         # Phase 2: course details + room/building code extraction
-        course_buildings = await _fetch_details(
+        course_buildings, detailed, skipped = await _fetch_details(
             client,
             courses,
             concurrency,
             on_detail_progress,
+            skip_ids=skip_detail_ids,
         )
 
-        # Phase 3: resolve buildings & assign campuses
+        # Phase 3: resolve buildings & assign campuses (only for detailed courses)
         await _assign_campuses(
             client,
-            courses,
+            detailed,
             course_buildings,
             building_cache,
             on_resolve_progress,
         )
 
-    return courses
+    return FetchResult(detailed=detailed, list_only=skipped)
 
 
 async def fetch_semester_list() -> list[dict]:
@@ -705,7 +739,7 @@ def resolve_semester_ids(
         click.BadParameter: If any key is not found.
 
     """
-    import click  # noqa: PLC0415
+    import click
 
     lookup = {s["key"]: s["id"] for s in semesters}
     ids = []

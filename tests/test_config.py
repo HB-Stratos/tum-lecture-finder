@@ -5,7 +5,12 @@ from unittest.mock import patch
 
 import pytest
 
-from tum_lecture_finder.config import current_semester_key, format_semester
+from tum_lecture_finder.config import (
+    current_semester_key,
+    format_semester,
+    is_current_or_future_semester,
+    semester_sort_key,
+)
 
 # ── current_semester_key ───────────────────────────────────────────────────
 
@@ -100,7 +105,7 @@ class TestFormatSemester:
         assert format_semester("0S") == "Summer 2000"
 
     def test_winter_year_99(self):
-        assert format_semester("99W") == "Winter 2099/00"
+        assert format_semester("99W") == "Winter 1999/00"
 
     def test_lowercase_semester_type(self):
         """format_semester accepts lowercase type indicator."""
@@ -109,3 +114,42 @@ class TestFormatSemester:
     def test_invalid_key_raises(self):
         with pytest.raises((ValueError, IndexError)):
             format_semester("")
+
+
+class TestSemesterSortKey:
+    """Tests for semester_sort_key()."""
+
+    def test_summer_before_winter_same_year(self):
+        assert semester_sort_key("25S") < semester_sort_key("25W")
+
+    def test_winter_before_next_summer(self):
+        assert semester_sort_key("25W") < semester_sort_key("26S")
+
+    def test_century_boundary(self):
+        """99W (1999) sorts before 00S (2000)."""
+        assert semester_sort_key("99W") < semester_sort_key("0S")
+
+    def test_equal_keys(self):
+        assert semester_sort_key("25W") == semester_sort_key("25W")
+
+    def test_1990s_before_2020s(self):
+        assert semester_sort_key("90S") < semester_sort_key("25S")
+
+
+class TestIsCurrentOrFutureSemester:
+    """Tests for is_current_or_future_semester()."""
+
+    def test_current_semester_is_current(self):
+        assert is_current_or_future_semester("25W", current="25W") is True
+
+    def test_future_semester(self):
+        assert is_current_or_future_semester("26S", current="25W") is True
+
+    def test_past_semester(self):
+        assert is_current_or_future_semester("25S", current="25W") is False
+
+    def test_far_past(self):
+        assert is_current_or_future_semester("23W", current="25W") is False
+
+    def test_far_future(self):
+        assert is_current_or_future_semester("30S", current="25W") is True

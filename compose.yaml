@@ -1,0 +1,18 @@
+services:
+  server:
+    build:
+      context: .
+    ports:
+      - 8000:8000
+    volumes:
+      - tlf-data:/app/data
+    environment:
+      - TLF_TRUST_PROXY=1
+      - TLF_JSON_LOGS=1
+      - TLF_UPDATE_CRON=0 3 * * *
+      - TLF_UPDATE_SEMESTERS=4
+      - TLF_FULL_UPDATE_EVERY=7
+      - TLF_PRELOAD_MODEL=1
+
+volumes:
+  tlf-data:

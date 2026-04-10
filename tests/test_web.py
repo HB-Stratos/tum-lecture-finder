@@ -858,3 +858,746 @@ class TestSearchPagination:
     def test_invalid_offset_rejected(self, client):
         resp = client.get("/api/search?q=test&offset=-1")
         assert resp.status_code == 422
+
+
+# ── Cache invalidation ─────────────────────────────────────────────────────
+
+
+class TestHealthEndpoint:
+    """/health endpoint for Docker and reverse-proxy health checks."""
+
+    def test_health_returns_200(self, populated_store, client):
+        """/health returns 200 OK when DB is accessible."""
+        resp = client.get("/health")
+        assert resp.status_code == 200
+
+    def test_health_response_body(self, populated_store, client):
+        """/health returns JSON with status and db fields."""
+        resp = client.get("/health")
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["db"] == "ok"
+
+    def test_health_no_rate_limit(self, populated_store, client):
+        """/health is not rate-limited (no 'Retry-After' on repeated calls)."""
+        for _ in range(5):
+            resp = client.get("/health")
+            assert resp.status_code == 200
+
+
+class TestCacheInvalidation:
+    """Verifies that type/campus count caches reflect DB updates."""
+
+    def test_cache_stale_after_db_update(self, populated_store, client):
+        """Adding a new course type should appear in counts after cache is cleared."""
+        import tum_lecture_finder.web as web_mod
+
+        # Fetch counts once (populates cache)
+        resp1 = client.get("/api/stats")
+        assert resp1.status_code == 200
+        assert resp1.json()["course_types"]  # sanity-check: types are populated before update
+
+        # Add a new course with a unique type not in the original data
+        from tum_lecture_finder.models import Course
+
+        populated_store.upsert_courses([
+            Course(
+                course_id=99,
+                semester_key="25W",
+                course_type="ZZUNIQUE",
+                title_en="New Unique Course",
+            )
+        ])
+
+        # Without cache invalidation, stale counts are returned
+        resp_cached = client.get("/api/stats")
+        types_cached = {t["type"]: t["count"] for t in resp_cached.json()["course_types"]}
+
+        # Manually invalidate cache (simulating what the scheduled updater should do)
+        web_mod._type_counts_cache = None
+        web_mod._campus_counts_cache = None
+
+        resp2 = client.get("/api/stats")
+        types_after = {t["type"]: t["count"] for t in resp2.json()["course_types"]}
+
+        # After invalidation, new type should be visible
+        assert "ZZUNIQUE" in types_after
+        # Before invalidation, it was not visible (demonstrating the staleness bug)
+        assert "ZZUNIQUE" not in types_cached
+
+
+# ── Schedule endpoint error handling ──────────────────────────────────────
+
+
+class TestScheduleEndpoint:
+    """Tests for /api/course/{id}/schedule behaviour on error."""
+
+    def test_schedule_success(self, populated_store, client):
+        """When the external API responds, appointments are returned."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mock_data = {
+            "courseGroupDtos": [
+                {
+                    "appointmentDtos": [
+                        {
+                            "dtStart": "2025-10-20T10:00:00",
+                            "dtEnd": "2025-10-20T12:00:00",
+                            "weekDay": "MO",
+                            "resource": [{"subText": "garching, MI HS 1 (5602.EG.001)"}],
+                        }
+                    ]
+                }
+            ]
+        }
+
+        # Use MagicMock (not AsyncMock) for resp since resp.json() is called synchronously
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.json.return_value = mock_data
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        # Patch at the module where httpx is imported (web.py)
+        with patch("tum_lecture_finder.web.httpx.AsyncClient", return_value=mock_client):
+            resp = client.get("/api/course/1/schedule")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "appointments" in data
+
+    def test_schedule_api_error_returns_empty_with_error_flag(self, populated_store, client):
+        """When the TUMonline API is down, schedule returns empty appointments with error field."""
+        from unittest.mock import AsyncMock, patch
+
+        import httpx
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(side_effect=httpx.ConnectError("timeout"))
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("tum_lecture_finder.web.httpx.AsyncClient", return_value=mock_client):
+            resp = client.get("/api/course/1/schedule")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["appointments"] == []
+        assert "error" in data  # client can show a message instead of silent empty
+
+    def test_schedule_unknown_course_returns_empty(self, populated_store, client):
+        """The schedule endpoint does not validate course existence locally.
+
+        It always hits TUMonline. If TUMonline 404s, the caught HTTPError
+        causes empty appointments to be returned (not a 404 to the client).
+        This documents current behaviour — ideally the endpoint would return 404
+        for course IDs not in the local DB.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        import httpx
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+        mock_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "404", request=MagicMock(), response=mock_resp
+        )
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("tum_lecture_finder.web.httpx.AsyncClient", return_value=mock_client):
+            resp = client.get("/api/course/99999/schedule")
+
+        assert resp.status_code == 200  # error is swallowed
+        data = resp.json()
+        assert data["appointments"] == []
+        assert "error" in data
+
+
+# ── Scheduled update tests ──────────────────────────────────────────────────
+
+
+class TestScheduledUpdate:
+    """Tests for _scheduled_update() two-tier logic and cache invalidation."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_module_state(self):
+        """Reset module-level state between tests."""
+        import tum_lecture_finder.web as web_mod
+
+        web_mod._update_run_count = -1
+        web_mod._update_running = False
+        web_mod._type_counts_cache = ("dummy", [])
+        web_mod._campus_counts_cache = ("dummy", [])
+        yield
+        web_mod._update_run_count = -1
+        web_mod._update_running = False
+
+    @pytest.fixture
+    def mock_store(self, tmp_path):
+        """A real CourseStore backed by tmp_path."""
+        store = CourseStore(db_path=tmp_path / "test.db", check_same_thread=False)
+        import tum_lecture_finder.web as web_mod
+
+        old = web_mod._store
+        web_mod._store = store
+        yield store
+        web_mod._store = old
+        store.close()
+
+    @pytest.mark.asyncio
+    async def test_first_run_is_full(self, mock_store):
+        """First run after process start should be a full update (counter -1 -> 0)."""
+        from unittest.mock import AsyncMock, patch
+
+        import tum_lecture_finder.web as web_mod
+        from tum_lecture_finder.fetcher import FetchResult
+        from tum_lecture_finder.models import Course
+
+        semesters = [{"id": 204, "key": "25W"}, {"id": 203, "key": "25S"}]
+        result = FetchResult(
+            detailed=[Course(course_id=1, semester_key="25W", title_en="A")],
+            list_only=[],
+        )
+
+        with (
+            patch(
+                "tum_lecture_finder.fetcher.fetch_semester_list",
+                new=AsyncMock(return_value=semesters),
+            ),
+            patch(
+                "tum_lecture_finder.fetcher.fetch_courses",
+                new=AsyncMock(return_value=result),
+            ) as mock_fetch,
+            patch("tum_lecture_finder.search.build_embeddings", return_value=1),
+            patch("tum_lecture_finder.search.invalidate_course_cache"),
+        ):
+            await web_mod._scheduled_update()
+
+        # First run: skip_detail_ids should be None (full update)
+        assert mock_fetch.call_args is not None
+        assert mock_fetch.call_args.kwargs.get("skip_detail_ids") is None
+
+    @pytest.mark.asyncio
+    async def test_incremental_skips_past_semesters(self, mock_store):
+        """On an incremental run, past semesters with details should be skipped."""
+        from unittest.mock import AsyncMock, patch
+
+        import tum_lecture_finder.web as web_mod
+        from tum_lecture_finder.fetcher import FetchResult
+        from tum_lecture_finder.models import Course
+
+        # Set counter so next run is incremental (not full)
+        web_mod._update_run_count = 0  # next increment -> 1, 1 % 7 != 0
+
+        # Pre-populate DB with a past semester course that has details
+        mock_store.upsert_courses([
+            Course(course_id=100, semester_key="24W", title_en="Old", content_en="Has content"),
+        ])
+
+        semesters = [
+            {"id": 206, "key": "26S"},  # current/future
+            {"id": 204, "key": "24W"},  # past
+        ]
+        result = FetchResult(
+            detailed=[Course(course_id=200, semester_key="26S", title_en="New")],
+            list_only=[Course(course_id=100, semester_key="24W", title_en="Old")],
+        )
+
+        with (
+            patch(
+                "tum_lecture_finder.fetcher.fetch_semester_list",
+                new=AsyncMock(return_value=semesters),
+            ),
+            patch(
+                "tum_lecture_finder.fetcher.fetch_courses",
+                new=AsyncMock(return_value=result),
+            ) as mock_fetch,
+            patch("tum_lecture_finder.search.build_embeddings", return_value=1),
+            patch("tum_lecture_finder.search.invalidate_course_cache"),
+        ):
+            await web_mod._scheduled_update()
+
+        # Should have passed skip_detail_ids containing course 100
+        assert mock_fetch.call_args is not None
+        skip_ids = mock_fetch.call_args.kwargs.get("skip_detail_ids")
+        assert skip_ids is not None
+        assert 100 in skip_ids
+
+    @pytest.mark.asyncio
+    async def test_caches_invalidated_after_update(self, mock_store):
+        """Web caches and course cache must be cleared after update."""
+        from unittest.mock import AsyncMock, patch
+
+        import tum_lecture_finder.web as web_mod
+        from tum_lecture_finder.fetcher import FetchResult
+        from tum_lecture_finder.models import Course
+
+        semesters = [{"id": 204, "key": "25W"}]
+        result = FetchResult(
+            detailed=[Course(course_id=1, semester_key="25W", title_en="A")],
+            list_only=[],
+        )
+
+        with (
+            patch(
+                "tum_lecture_finder.fetcher.fetch_semester_list",
+                new=AsyncMock(return_value=semesters),
+            ),
+            patch(
+                "tum_lecture_finder.fetcher.fetch_courses",
+                new=AsyncMock(return_value=result),
+            ),
+            patch("tum_lecture_finder.search.build_embeddings", return_value=1),
+            patch(
+                "tum_lecture_finder.search.invalidate_course_cache",
+            ) as mock_invalidate,
+        ):
+            await web_mod._scheduled_update()
+
+        mock_invalidate.assert_called_once()
+        assert web_mod._type_counts_cache is None
+        assert web_mod._campus_counts_cache is None
+
+    @pytest.mark.asyncio
+    async def test_overlap_guard(self, mock_store):
+        """If an update is already running, a new one should be skipped."""
+        import tum_lecture_finder.web as web_mod
+
+        web_mod._update_running = True
+        # This should return immediately without doing anything
+        await web_mod._scheduled_update()
+        # Counter should not have been incremented
+        assert web_mod._update_run_count == -1
+
+    @pytest.mark.asyncio
+    async def test_update_stats_persisted(self, mock_store):
+        """Update stats should be persisted in the meta table."""
+        from unittest.mock import AsyncMock, patch
+
+        import tum_lecture_finder.web as web_mod
+        from tum_lecture_finder.fetcher import FetchResult
+        from tum_lecture_finder.models import Course
+
+        semesters = [{"id": 204, "key": "25W"}]
+        result = FetchResult(
+            detailed=[Course(course_id=1, semester_key="25W", title_en="A")],
+            list_only=[],
+        )
+
+        with (
+            patch(
+                "tum_lecture_finder.fetcher.fetch_semester_list",
+                new=AsyncMock(return_value=semesters),
+            ),
+            patch(
+                "tum_lecture_finder.fetcher.fetch_courses",
+                new=AsyncMock(return_value=result),
+            ),
+            patch("tum_lecture_finder.search.build_embeddings", return_value=1),
+            patch("tum_lecture_finder.search.invalidate_course_cache"),
+        ):
+            await web_mod._scheduled_update()
+
+        assert mock_store.get_meta("last_update_tier") == "full"
+        assert mock_store.get_meta("last_update_detailed") == "1"
+        assert mock_store.get_meta("last_update_skipped") == "0"
+        assert mock_store.get_meta("last_update_semesters") == "25W"
+        assert mock_store.get_meta("last_update_time") is not None
+
+
+class TestScheduledUpdateIntegration:
+    """End-to-end integration test for _scheduled_update with fake HTTP responses.
+
+    This test wires up the real fetcher (not mocked), but intercepts HTTP at the
+    httpx transport level so no real network calls are made.  It validates the
+    full pipeline: semester list → course list → details (with skipping) →
+    upsert → cache invalidation → stats persistence.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_module_state(self):
+        """Reset module-level state between tests."""
+        import tum_lecture_finder.web as web_mod
+
+        web_mod._update_run_count = -1
+        web_mod._update_running = False
+        web_mod._type_counts_cache = ("dummy", [])
+        web_mod._campus_counts_cache = ("dummy", [])
+        yield
+        web_mod._update_run_count = -1
+        web_mod._update_running = False
+
+    @pytest.fixture
+    def integration_store(self, tmp_path):
+        """A real CourseStore patched as the global _store."""
+        store = CourseStore(db_path=tmp_path / "integration.db", check_same_thread=False)
+        import tum_lecture_finder.web as web_mod
+
+        old = web_mod._store
+        web_mod._store = store
+        yield store
+        web_mod._store = old
+        store.close()
+
+    @pytest.mark.asyncio
+    async def test_full_then_incremental_cycle(self, integration_store):  # noqa: C901
+        """Run two update cycles: first full, then incremental. Verify behavior."""
+        from unittest.mock import AsyncMock, patch
+
+        import tum_lecture_finder.web as web_mod
+
+        # ── Fake API data ─────────────────────────────────────
+        semester_list = [
+            {"id": 206, "key": "26S"},
+            {"id": 205, "key": "25W"},
+            {"id": 204, "key": "25S"},
+            {"id": 203, "key": "24W"},
+        ]
+
+        def _make_list_item(cid, key, number, title_de, title_en):
+            return {
+                "id": cid,
+                "courseNumber": {"courseNumber": number},
+                "courseTitle": {"translations": {"translation": [
+                    {"lang": "de", "value": title_de},
+                    {"lang": "en", "value": title_en},
+                ]}},
+                "courseTypeDto": {"key": "VO"},
+                "semesterDto": {"key": key},
+                "identityCodeIdOfCpCourseDto": cid * 10,
+            }
+
+        courses_by_semester = {
+            206: [_make_list_item(1, "26S", "IN0001", "Informatik 1", "CS 1")],
+            205: [_make_list_item(2, "25W", "IN0002", "Informatik 2", "CS 2")],
+            204: [_make_list_item(3, "25S", "IN0003", "Informatik 3", "CS 3")],
+            203: [_make_list_item(4, "24W", "IN0004", "Informatik 4", "CS 4")],
+        }
+
+        detail_fetch_ids: list[int] = []
+
+        def _detail_json(cid):
+            """Fake detail response with description."""
+            return {
+                "resource": [{
+                    "content": {
+                        "cpCourseDetailDto": {
+                            "cpCourseDescriptionDto": {
+                                "courseContent": {
+                                    "translations": {"translation": [
+                                        {"lang": "en", "value": f"Content for {cid}"},
+                                    ]},
+                                },
+                            },
+                        },
+                    },
+                }],
+            }
+
+        async def _fake_get(url, **kwargs):
+            """Route fake HTTP requests to the right response."""
+            import httpx
+
+            req = httpx.Request("GET", url)
+
+            if "semesters" in url:
+                return httpx.Response(200, json={"semesters": semester_list}, request=req)
+
+            # Course list pages
+            for sid, items in courses_by_semester.items():
+                if f"termId-eq={sid}" in url:
+                    return httpx.Response(200, json={
+                        "totalCount": len(items),
+                        "courses": items,
+                    }, request=req)
+
+            # Course detail
+            if "/courses/" in url and "courseGroups" not in url:
+                cid = int(url.split("/courses/")[1].split("?")[0])
+                detail_fetch_ids.append(cid)
+                return httpx.Response(200, json=_detail_json(cid), request=req)
+
+            # Course groups (return empty)
+            if "courseGroups" in url:
+                return httpx.Response(200, json={}, request=req)
+
+            # NavigaTUM (return empty)
+            if "nav.tum" in url:
+                return httpx.Response(200, json={"sections": []}, request=req)
+
+            return httpx.Response(404, request=req)
+
+        mock_client = AsyncMock()
+        mock_client.get = _fake_get
+
+        # ── Run 1: Full update ────────────────────────────────
+        detail_fetch_ids.clear()
+
+        with (
+            patch("httpx.AsyncClient") as mock_cls,
+            patch("tum_lecture_finder.search.build_embeddings", return_value=1),
+            patch("tum_lecture_finder.search.invalidate_course_cache"),
+        ):
+            mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            await web_mod._scheduled_update()
+
+        # Full update: all 4 courses should have had details fetched
+        assert sorted(detail_fetch_ids) == [1, 2, 3, 4]
+        assert integration_store.course_count() == 4
+        assert web_mod._type_counts_cache is None  # caches cleared
+        assert integration_store.get_meta("last_update_tier") == "full"
+
+        # Verify descriptions were stored
+        for cid in [1, 2, 3, 4]:
+            row = integration_store.get_course(cid)
+            assert row["content_en"] == f"Content for {cid}"
+
+        # ── Run 2: Incremental update ─────────────────────────
+        detail_fetch_ids.clear()
+
+        with (
+            patch("httpx.AsyncClient") as mock_cls,
+            patch("tum_lecture_finder.search.build_embeddings", return_value=1),
+            patch("tum_lecture_finder.search.invalidate_course_cache"),
+        ):
+            mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            await web_mod._scheduled_update()
+
+        # Incremental: only current/future semester courses (26S=id 1) should
+        # have details fetched. Past semesters (25W, 25S, 24W) with existing
+        # descriptions should be skipped.
+        assert 1 in detail_fetch_ids, "Current/future course should be fetched"
+        assert 4 not in detail_fetch_ids, "Past course with details should be skipped"
+        assert integration_store.get_meta("last_update_tier") == "incremental"
+
+        # Descriptions should still be intact for skipped courses
+        for cid in [2, 3, 4]:
+            row = integration_store.get_course(cid)
+            assert row["content_en"] == f"Content for {cid}", (
+                f"Course {cid} description was overwritten during incremental update"
+            )
+
+
+class TestHotReloadEmbeddings:
+    """Verify that a partial update followed by embedding rebuild makes new
+    courses appear in semantic search, while preserving existing courses.
+
+    This test uses the real sentence-transformer model and real embedding
+    encode/save/load — the only thing mocked is the HTTP layer.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_caches(self, tmp_path, monkeypatch):
+        """Isolate all caches so tests don't leak into each other."""
+        import tum_lecture_finder.search as search_mod
+        import tum_lecture_finder.storage as storage_mod
+        import tum_lecture_finder.web as web_mod
+
+        # Redirect embeddings file to tmp_path so we don't touch the real one
+        monkeypatch.setattr(storage_mod, "EMBEDDINGS_PATH", tmp_path / "embeddings.npz")
+
+        # Reset module-level caches
+        web_mod._update_run_count = -1
+        web_mod._update_running = False
+        web_mod._type_counts_cache = None
+        web_mod._campus_counts_cache = None
+        search_mod._course_cache = None
+
+        yield
+
+        # Clean up
+        web_mod._update_run_count = -1
+        web_mod._update_running = False
+        search_mod._course_cache = None
+
+    @pytest.fixture
+    def store(self, tmp_path):
+        """A real CourseStore patched as the global _store."""
+        import tum_lecture_finder.web as web_mod
+
+        s = CourseStore(db_path=tmp_path / "test.db", check_same_thread=False)
+        old = web_mod._store
+        web_mod._store = s
+        yield s
+        web_mod._store = old
+        s.close()
+
+    def _make_fake_http(self, semester_list, courses_by_semester, detail_tracker):  # noqa: C901
+        """Build a fake async GET handler for httpx."""
+        import httpx
+
+        def _detail_json(cid, content):
+            return {
+                "resource": [{
+                    "content": {
+                        "cpCourseDetailDto": {
+                            "cpCourseDescriptionDto": {
+                                "courseContent": {
+                                    "translations": {"translation": [
+                                        {"lang": "en", "value": content},
+                                    ]},
+                                },
+                            },
+                        },
+                    },
+                }],
+            }
+
+        # Map course_id → content for detail responses
+        detail_content = {}
+        for items in courses_by_semester.values():
+            for item in items:
+                cid = item["id"]
+                detail_content[cid] = f"Content about {item['_title']}"
+
+        async def _fake_get(url, **kwargs):
+            req = httpx.Request("GET", url)
+
+            if "semesters" in url:
+                return httpx.Response(200, json={"semesters": semester_list}, request=req)
+
+            for sid, items in courses_by_semester.items():
+                if f"termId-eq={sid}" in url:
+                    # Strip the internal _title helper before returning
+                    clean = [{k: v for k, v in item.items() if k != "_title"} for item in items]
+                    return httpx.Response(
+                        200, json={"totalCount": len(clean), "courses": clean}, request=req,
+                    )
+
+            if "/courses/" in url and "courseGroups" not in url:
+                cid = int(url.split("/courses/")[1].split("?")[0])
+                detail_tracker.append(cid)
+                return httpx.Response(
+                    200, json=_detail_json(cid, detail_content.get(cid, "")), request=req,
+                )
+
+            if "courseGroups" in url:
+                return httpx.Response(200, json={}, request=req)
+
+            if "nav.tum" in url:
+                return httpx.Response(200, json={"sections": []}, request=req)
+
+            return httpx.Response(404, request=req)
+
+        return _fake_get
+
+    @staticmethod
+    def _list_item(cid, sem_key, number, title):
+        return {
+            "id": cid,
+            "_title": title,  # internal helper, stripped before HTTP response
+            "courseNumber": {"courseNumber": number},
+            "courseTitle": {"translations": {"translation": [
+                {"lang": "en", "value": title},
+            ]}},
+            "courseTypeDto": {"key": "VO"},
+            "semesterDto": {"key": sem_key},
+            "identityCodeIdOfCpCourseDto": cid * 10,
+        }
+
+    @pytest.mark.asyncio
+    async def test_new_course_appears_in_semantic_search_after_incremental_update(self, store):
+        """Full lifecycle: build initial embeddings → incremental update adds a
+        new course → rebuild embeddings → semantic search finds the new course,
+        and existing courses are still findable.
+        """
+        from unittest.mock import AsyncMock, patch
+
+        import tum_lecture_finder.web as web_mod
+        from tum_lecture_finder.search import (
+            semantic_search,
+        )
+
+        semester_list = [
+            {"id": 206, "key": "26S"},
+            {"id": 203, "key": "24W"},
+        ]
+
+        # ── Phase 1: Initial full update with 2 courses ──────
+        initial_courses = {
+            206: [self._list_item(1, "26S", "IN0001", "quantum computing fundamentals")],
+            203: [self._list_item(2, "24W", "IN0002", "medieval history of europe")],
+        }
+
+        detail_tracker: list[int] = []
+        fake_get = self._make_fake_http(semester_list, initial_courses, detail_tracker)
+        mock_client = AsyncMock()
+        mock_client.get = fake_get
+
+        with patch("httpx.AsyncClient") as mock_cls:
+            mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            await web_mod._scheduled_update()
+
+        assert sorted(detail_tracker) == [1, 2], "Full update should fetch all details"
+        assert store.course_count() == 2
+
+        # Verify semantic search works for both courses
+        results_q = semantic_search(store, "quantum computing")
+        assert any(r.course.course_id == 1 for r in results_q), (
+            "quantum computing course should be findable"
+        )
+        results_h = semantic_search(store, "medieval history")
+        assert any(r.course.course_id == 2 for r in results_h), (
+            "medieval history course should be findable"
+        )
+
+        # ── Phase 2: Incremental update adds a new course ────
+        # Now the API returns 3 courses: the original 2 + a new one
+        updated_courses = {
+            206: [
+                self._list_item(1, "26S", "IN0001", "quantum computing fundamentals"),
+                self._list_item(3, "26S", "IN0003", "deep reinforcement learning"),
+            ],
+            203: [self._list_item(2, "24W", "IN0002", "medieval history of europe")],
+        }
+
+        detail_tracker.clear()
+        fake_get_2 = self._make_fake_http(semester_list, updated_courses, detail_tracker)
+        mock_client_2 = AsyncMock()
+        mock_client_2.get = fake_get_2
+
+        with patch("httpx.AsyncClient") as mock_cls:
+            mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client_2)
+            mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            await web_mod._scheduled_update()
+
+        # Incremental: course 2 (past, has details) should be skipped
+        assert 2 not in detail_tracker, "Past course with details should be skipped"
+        # Course 3 is new, should be fetched
+        assert 3 in detail_tracker, "New course should have details fetched"
+        assert store.course_count() == 3
+
+        # ── Phase 3: Verify hot-reloaded embeddings ──────────
+        # The NEW course should now be findable via semantic search
+        results_rl = semantic_search(store, "reinforcement learning")
+        assert any(r.course.course_id == 3 for r in results_rl), (
+            "New course 'deep reinforcement learning' should appear in semantic search "
+            "after incremental update + embedding rebuild"
+        )
+
+        # The EXISTING courses should STILL be findable
+        results_q2 = semantic_search(store, "quantum computing")
+        assert any(r.course.course_id == 1 for r in results_q2), (
+            "Existing course should still be findable after incremental update"
+        )
+
+        # Past course whose details were skipped should still be findable
+        results_h2 = semantic_search(store, "medieval history")
+        assert any(r.course.course_id == 2 for r in results_h2), (
+            "Skipped past course should still be findable (descriptions preserved)"
+        )
+
+        # Verify update stats
+        assert store.get_meta("last_update_tier") == "incremental"
+        assert int(store.get_meta("last_update_skipped")) > 0

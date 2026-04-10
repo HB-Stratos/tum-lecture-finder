@@ -96,5 +96,20 @@ block title %}Statistics — TUM Lecture Finder{% endblock %} {% block content %
       </div>
     </div>
   </div>
+
+  {% if update_info %}
+  <div class="stats-section" style="margin-top: 1.5rem;">
+    <h2>Last Scheduled Update</h2>
+    <table class="stats-table">
+      <tbody>
+        <tr><td>Time</td><td>{{ update_info.time }}</td></tr>
+        <tr><td>Mode</td><td><span class="badge badge-type">{{ update_info.tier }}</span></td></tr>
+        <tr><td>Courses fetched (full detail)</td><td>{{ "{:,}".format(update_info.courses_detailed) }}</td></tr>
+        <tr><td>Courses skipped (list only)</td><td>{{ "{:,}".format(update_info.courses_skipped) }}</td></tr>
+        <tr><td>Semesters</td><td>{{ update_info.semesters | join(", ") }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
 </div>
 {% endblock %}

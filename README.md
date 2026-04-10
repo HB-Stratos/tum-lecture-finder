@@ -37,7 +37,7 @@ Requires Python ≥ 3.12.
 ```bash
 git clone https://github.com/HB-Stratos/tum-lecture-finder.git
 cd TumLectureFinder
-pip install -e .
+uv sync
 ```
 
 ## Usage
@@ -93,7 +93,7 @@ pytest tests/
 ruff check src/ tests/
 ```
 
-263 tests, ruff clean (all rules enabled).
+385 tests, ruff clean (all rules enabled).
 
 > [!IMPORTANT]
 > Given the AI authorship, treat any untested code path as unreviewed. The test suite covers the happy path well but edge cases may not be handled correctly. If something breaks in an unexpected way, read the relevant module rather than assuming the architecture is sound.

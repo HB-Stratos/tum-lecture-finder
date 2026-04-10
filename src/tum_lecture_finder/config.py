@@ -2,8 +2,32 @@
 
 from pathlib import Path
 
+
+def get_project_root() -> Path:
+    """Return the project root as a pathlib.Path object.
+
+    Works no matter which file in the project you call it from.
+    """
+    # Start from the file that contains this function (or any file in your project)
+    current = Path(__file__).resolve().parent   # .resolve() handles symlinks & makes it absolute
+
+    # Walk up until we find a common project marker
+    for parent in current.parents:              # .parents is a generator of ancestor directories
+        # Common markers (add/remove as needed for your project)
+        if (parent / ".git").exists():          # Almost every real project has this
+            return parent
+        if (parent / "pyproject.toml").exists():  # Modern Python projects (PEP 518+)
+            return parent
+        if (parent / "setup.py").exists():      # Older setuptools projects
+            return parent
+        if (parent / "requirements.txt").exists():
+            return parent
+
+    # Fallback (should rarely happen)
+    raise RuntimeError("Could not find project root (no marker found)")
+
 # ── Data directory ──────────────────────────────────────────────────────────
-DATA_DIR: Path = Path.home() / ".tum_lecture_finder"
+DATA_DIR: Path = get_project_root() / "data"
 DB_PATH: Path = DATA_DIR / "courses.db"
 
 # ── TUMonline public REST API ──────────────────────────────────────────────
@@ -27,7 +51,7 @@ def current_semester_key() -> str:
     Winter semester: October - March  -> ``<YY>W``
     Summer semester: April - September -> ``<YY>S``
     """
-    import datetime  # noqa: PLC0415
+    import datetime
 
     today = datetime.datetime.now(tz=datetime.UTC).date()
     year_short = today.year % 100
@@ -51,11 +75,45 @@ def format_semester(key: str) -> str:
     """
     yy = int(key[:-1])
     kind = key[-1]
-    century = 2000
-    year = century + yy
+    year = (1900 + yy) if yy >= 50 else (2000 + yy)  # noqa: PLR2004
     if kind.upper() == "W":
-        return f"Winter {year}/{(year + 1) % 100:02d}"
+        next_yy = (year + 1) % 100
+        return f"Winter {year}/{next_yy:02d}"
     return f"Summer {year}"
+
+
+def semester_sort_key(key: str) -> tuple[int, int]:
+    """Return a ``(full_year, half)`` tuple for chronological semester ordering.
+
+    Two-digit years >= 50 are treated as 1900s; years < 50 as 2000s.  This
+    handles the century boundary so ``"99W"`` (Winter 1999) sorts before
+    ``"00S"`` (Summer 2000) and correctly before ``"25W"`` (Winter 2025).
+
+    Args:
+        key: Semester key (e.g. ``"25W"`` or ``"99S"``).
+
+    Returns:
+        ``(full_year, semester_half)`` where summer = 0, winter = 1.
+
+    """
+    yy = int(key[:-1])
+    kind = key[-1].upper()
+    full_year = (1900 + yy) if yy >= 50 else (2000 + yy)  # noqa: PLR2004
+    return (full_year, 0 if kind == "S" else 1)
+
+
+def is_current_or_future_semester(key: str, current: str) -> bool:
+    """Return True if *key* is the current semester or a future one.
+
+    Args:
+        key: Semester key to test (e.g. ``"26S"``).
+        current: The current semester key (e.g. ``"25W"``).
+
+    Returns:
+        True if *key* >= *current* in chronological order.
+
+    """
+    return semester_sort_key(key) >= semester_sort_key(current)
 
 
 # ── BM25 column weights for FTS5 ──────────────────────────────────────────
