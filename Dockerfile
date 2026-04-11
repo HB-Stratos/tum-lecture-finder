@@ -1,22 +1,17 @@
-# An example using multi-stage image builds to create a final image without uv.
+# Multi-stage build: deps → runtime
+#
+# The deps stage installs third-party packages and the ML model.  These
+# rarely change and produce a ~1.6 GB layer.  In the runtime image we
+# copy deps and source code as separate --link layers so that code-only
+# changes never re-export the heavy deps/model layers.
 
-# First, build the application in the `/app` directory.
-# See `Dockerfile` for details.
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
-ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
-
-# Omit development dependencies
-ENV UV_NO_DEV=1
+# ── Stage 1: dependencies + model (stable, ~1.6 GB) ────────────────────
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS deps
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_NO_DEV=1 UV_PYTHON_DOWNLOADS=0
 
 # Sentence-transformer model is cached outside /app/data so that
 # a volume mount on /app/data (for the DB + embeddings) doesn't shadow it.
 ENV HF_HOME=/app/.models
-
-# Disable Python downloads, because we want to use the system interpreter
-# across both images. If using a managed Python version, it needs to be
-# copied from the build image into the final image; see `standalone.Dockerfile`
-# for an example.
-ENV UV_PYTHON_DOWNLOADS=0
 
 WORKDIR /app
 RUN --mount=type=cache,target=/root/.cache/uv \
@@ -30,12 +25,8 @@ SentenceTransformer("all-MiniLM-L6-v2"); \
 print("Model cached."); \
 '
 
-COPY . /app
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --extra cpu
 
-
-# Then, use a final image without uv
+# ── Stage 2: runtime image (no uv, no build tools) ────────────────────
 FROM python:3.12-slim-bookworm
 # It is important to use the image that matches the builder, as the path to the
 # Python executable must be the same, e.g., using `python:3.11-slim-bookworm`
@@ -49,9 +40,19 @@ ENV HF_HUB_OFFLINE=1
 RUN groupadd --system --gid 999 nonroot \
  && useradd --system --gid 999 --uid 999 --create-home nonroot
 
-# Copy the application from the builder (no --chown: .venv and .models are
-# read-only at runtime, and chowning thousands of small files is very slow).
-COPY --from=builder /app /app
+# ── Layer-split COPY with --link ──────────────────────────────────────
+# --link creates content-addressed layers: if the source bytes haven't
+# changed the layer is reused even when the stage it came from rebuilt.
+#
+# deps stage  → .venv (third-party only, ~1.5 GB) and .models (~90 MB)
+#               These layers are cached across code-only changes.
+# build context → project source code (small, changes every commit)
+COPY --link --from=deps /app/.venv /app/.venv
+COPY --link --from=deps /app/.models /app/.models
+COPY ./src /app/src
+# config.py:get_project_root() walks up from __file__ looking for pyproject.toml.
+# Without this file the app crashes at startup with RuntimeError.
+COPY ./pyproject.toml /app/pyproject.toml
 
 # Ensure the data directory exists and is writable by nonroot,
 # even when an empty Docker volume is mounted over it.
@@ -63,7 +64,9 @@ COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
 # Place executables in the environment at the front of the path
+# Make the project importable without installing it into the venv
 ENV PATH="/app/.venv/bin:$PATH"
+ENV PYTHONPATH="/app/src"
 
 # Use `/app` as the working directory
 WORKDIR /app
@@ -71,4 +74,4 @@ WORKDIR /app
 EXPOSE 8000
 
 ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["tlf", "serve", "--host", "0.0.0.0"]
+CMD ["python", "-m", "tum_lecture_finder", "serve", "--host", "0.0.0.0"]

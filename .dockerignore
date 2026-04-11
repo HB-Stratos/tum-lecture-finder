@@ -35,6 +35,16 @@ README.md
 
 **/scripts
 **/docs
-**/scripts
 **/tests
 **/data
+
+# Dev tool configs and build artifacts not needed in the image
+**/.claude
+**/.serena
+**/.playwright-mcp
+**/.pytest_cache
+**/.ruff_cache
+**/build
+**/media
+CLAUDE.md
+.python-version
