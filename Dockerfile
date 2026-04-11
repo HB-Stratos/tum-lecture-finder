@@ -22,7 +22,7 @@ WORKDIR /app
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    uv sync --locked --no-install-project
+    uv sync --locked --no-install-project --extra cpu
 
 RUN uv run python -c '\
 from sentence_transformers import SentenceTransformer; \
@@ -32,7 +32,7 @@ print("Model cached."); \
 
 COPY . /app
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked
+    uv sync --locked --extra cpu
 
 
 # Then, use a final image without uv
