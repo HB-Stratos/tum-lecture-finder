@@ -41,16 +41,16 @@ def store(tmp_path: Path):
 
 class TestEscapeFtsQuery:
     def test_basic_tokens(self):
-        assert _escape_fts_query("machine learning") == "machine* learning*"
+        assert _escape_fts_query("machine learning") == '"machine"* "learning"*'
 
     def test_single_token(self):
-        assert _escape_fts_query("robotics") == "robotics*"
+        assert _escape_fts_query("robotics") == '"robotics"*'
 
     def test_special_chars_stripped(self):
         result = _escape_fts_query('hello "world"')
-        assert '"' not in result
-        assert "hello*" in result
-        assert "world*" in result
+        # Quotes are escaped (doubled) inside FTS5 double-quoted strings
+        assert "hello" in result
+        assert "world" in result
 
     def test_empty_string(self):
         assert _escape_fts_query("") == '""'
@@ -60,18 +60,47 @@ class TestEscapeFtsQuery:
 
     def test_unicode_preserved(self):
         result = _escape_fts_query("Regelungstechnik")
-        assert "Regelungstechnik*" in result
+        assert result == '"Regelungstechnik"*'
 
     def test_parentheses_stripped(self):
         result = _escape_fts_query("PCB (design)")
         assert "(" not in result
         assert ")" not in result
-        assert "PCB*" in result
-        assert "design*" in result
+        assert "PCB" in result
+        assert "design" in result
 
     def test_multiple_spaces_handled(self):
         result = _escape_fts_query("machine   learning")
-        assert result == "machine* learning*"
+        assert result == '"machine"* "learning"*'
+
+    def test_fts5_or_keyword_escaped(self):
+        result = _escape_fts_query("machine OR learning")
+        # OR must be quoted so FTS5 treats it as a literal, not an operator
+        assert result == '"machine"* "OR"* "learning"*'
+
+    def test_fts5_and_keyword_escaped(self):
+        result = _escape_fts_query("test AND math")
+        assert result == '"test"* "AND"* "math"*'
+
+    def test_fts5_not_keyword_escaped(self):
+        result = _escape_fts_query("NOT applicable")
+        assert result == '"NOT"* "applicable"*'
+
+    def test_fts5_near_keyword_escaped(self):
+        result = _escape_fts_query("test NEAR exam")
+        assert result == '"test"* "NEAR"* "exam"*'
+
+    def test_embedded_double_quotes_escaped(self):
+        result = _escape_fts_query('say "hello" world')
+        # Double quotes inside tokens must be doubled per FTS5 spec
+        assert "hello" in result
+        # Result should be valid FTS5 — no bare unmatched quotes
+
+    def test_single_quotes_handled(self):
+        result = _escape_fts_query("who's on first")
+        # Single quotes are not special inside FTS5 double-quoted strings
+        assert "who" in result
+        assert "s" in result
 
 
 # ── _extract_excerpt ──────────────────────────────────────────────────────

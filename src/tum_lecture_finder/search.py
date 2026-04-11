@@ -75,8 +75,12 @@ def _dedup_by_identity(
 def _escape_fts_query(query: str) -> str:
     """Build an FTS5 query from a raw user string.
 
-    Each token gets prefix matching (``*``) so partial words work.
+    Each token is double-quoted (escaping any internal ``"`` per the FTS5
+    spec) and gets prefix matching (``*``) so partial words work.
     Tokens are combined with implicit AND.
+
+    Quoting neutralises FTS5 operators (``AND``, ``OR``, ``NOT``, ``NEAR``)
+    and special characters so arbitrary user input cannot cause syntax errors.
 
     Args:
         query: Raw user search string.
@@ -85,13 +89,13 @@ def _escape_fts_query(query: str) -> str:
         An FTS5-safe query string.
 
     """
-    # Strip FTS5 special characters, keep alphanumerics and whitespace
+    # Strip everything except word characters (letters, digits, _) and whitespace
     cleaned = re.sub(r"[^\w\s]", " ", query, flags=re.UNICODE)
     tokens = cleaned.split()
     if not tokens:
         return '""'
-    # Prefix-match every token for typo tolerance / partial matching
-    return " ".join(f"{t}*" for t in tokens)
+    # Double-quote each token (escape internal " by doubling) with prefix *
+    return " ".join(f'"{t.replace(chr(34), chr(34) + chr(34))}"*' for t in tokens)
 
 
 def _extract_excerpt(text: str, token: str) -> str:
