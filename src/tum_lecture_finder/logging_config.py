@@ -88,8 +88,15 @@ def setup_logging(*, json_logs: bool | None = None) -> None:
     root.handlers = [handler]
     root.setLevel(logging.INFO)
 
-    # Route uvicorn access/error logs through structlog
-    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+    # Route uvicorn error logs through structlog; suppress access logs
+    # (our request middleware provides a structured equivalent).
+    for name in ("uvicorn", "uvicorn.error"):
         lg = logging.getLogger(name)
         lg.handlers = []
         lg.propagate = True
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+
+    # Suppress noisy httpx per-request logging (our own middleware and
+    # endpoint handlers provide structured equivalents).
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)

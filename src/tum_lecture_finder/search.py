@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import logging
 import re
 import threading
 from typing import TYPE_CHECKING
+
+import structlog
 
 from tum_lecture_finder.models import Course, SearchResult
 from tum_lecture_finder.storage import parse_other_semesters, row_to_course
@@ -15,7 +16,7 @@ if TYPE_CHECKING:
 
     from tum_lecture_finder.storage import CourseStore
 
-log = logging.getLogger(__name__)
+log = structlog.get_logger(__name__)
 
 _SNIPPET_MAX_LEN = 120  # max chars for a description excerpt
 

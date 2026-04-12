@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import time
@@ -46,6 +47,7 @@ _STATIC_DIR = _HERE / "static"
 
 _TRUST_PROXY = os.environ.get("TLF_TRUST_PROXY", "0") == "1"
 _PRELOAD_MODEL = os.environ.get("TLF_PRELOAD_MODEL", "1") == "1"
+_LOG_INTERVAL = 500  # progress logging frequency during scheduled updates
 
 
 def _real_ip(request: Request) -> str:
@@ -133,6 +135,7 @@ async def _scheduled_update() -> None:  # noqa: PLR0915
             tier=tier,
             semesters=semester_keys,
         )
+        update_started = time.perf_counter()
 
         # Build skip set for incremental runs
         skip_ids: set[int] | None = None
@@ -148,26 +151,56 @@ async def _scheduled_update() -> None:  # noqa: PLR0915
                 )
 
         building_cache = store.get_building_cache()
+
+        # Progress callbacks — log every _LOG_INTERVAL items
+
+        def _on_list(fetched: int, total: int) -> None:
+            if fetched % _LOG_INTERVAL == 0 or fetched == total:
+                sched_log.info("course_list_progress", fetched=fetched, total=total)
+
+        def _on_detail(fetched: int, total: int) -> None:
+            if fetched % _LOG_INTERVAL == 0 or fetched == total:
+                sched_log.info("detail_fetch_progress", fetched=fetched, total=total)
+
+        fetch_started = time.perf_counter()
         result = await fetch_courses(
             semester_ids=semester_ids,
             building_cache=building_cache,
             skip_detail_ids=skip_ids,
+            on_list_progress=_on_list,
+            on_detail_progress=_on_detail,
+        )
+        fetch_s = round(time.perf_counter() - fetch_started, 1)
+        sched_log.info(
+            "fetch_complete",
+            detailed=len(result.detailed),
+            list_only=len(result.list_only),
+            duration_s=fetch_s,
         )
 
         all_courses = result.detailed + result.list_only
         if all_courses:
-            # Upsert in a single transaction
-            store.upsert_courses(result.detailed, commit=False)
-            if result.list_only:
-                store.upsert_course_list_fields(result.list_only, commit=False)
+            # Upsert in a single transaction — smart upsert preserves
+            # existing detail fields when new values are empty.
+            upsert_started = time.perf_counter()
+            store.upsert_courses(all_courses, commit=False)
             store.commit()
+            upsert_s = round(time.perf_counter() - upsert_started, 1)
+            sched_log.info("upsert_complete", courses=len(all_courses), duration_s=upsert_s)
 
+            xref_started = time.perf_counter()
             store.compute_other_semesters()
             store.upsert_building_cache(building_cache)
+            xref_s = round(time.perf_counter() - xref_started, 1)
+            sched_log.info("crossrefs_complete", duration_s=xref_s)
 
             # Invalidate caches BEFORE rebuilding embeddings
             invalidate_course_cache()
-            build_embeddings(store)
+            emb_started = time.perf_counter()
+            sched_log.info("embeddings_build_start")
+            await asyncio.to_thread(build_embeddings, store)
+            emb_s = round(time.perf_counter() - emb_started, 1)
+            sched_log.info("embeddings_build_done", duration_s=emb_s)
 
             # Invalidate web-layer caches
             _type_counts_cache = None
@@ -180,11 +213,13 @@ async def _scheduled_update() -> None:  # noqa: PLR0915
             store.set_meta("last_update_skipped", str(len(result.list_only)))
             store.set_meta("last_update_semesters", ",".join(semester_keys))
 
+            total_s = round(time.perf_counter() - update_started, 1)
             sched_log.info(
                 "scheduled_update_done",
                 courses_detailed=len(result.detailed),
                 courses_skipped=len(result.list_only),
                 total_stored=len(all_courses),
+                duration_s=total_s,
             )
         else:
             sched_log.warning("scheduled_update_no_courses")
@@ -296,10 +331,14 @@ async def _log_requests(
         raise
     duration_ms = (time.perf_counter() - started) * 1000
 
+    full_path = request.url.path
+    if request.url.query:
+        full_path = f"{full_path}?{request.url.query}"
+
     log.info(
         "request",
         method=request.method,
-        path=request.url.path,
+        path=full_path,
         status=response.status_code,
         duration_ms=round(duration_ms, 1),
         client_ip=_real_ip(request),
@@ -821,11 +860,20 @@ async def api_course_schedule(
             headers={"Accept": "application/json"},
             timeout=httpx.Timeout(15.0),
         ) as client:
+            started = time.perf_counter()
             resp = await client.get(url)
             resp.raise_for_status()
             data = resp.json()
+        duration_ms = (time.perf_counter() - started) * 1000
+        log.info(
+            "schedule_fetch",
+            course_id=course_id,
+            url=url,
+            status=resp.status_code,
+            duration_ms=round(duration_ms, 1),
+        )
     except httpx.HTTPError as exc:
-        log.warning("schedule_fetch_error", course_id=course_id, error=str(exc))
+        log.warning("schedule_fetch_error", course_id=course_id, url=url, error=str(exc))
         return {"appointments": [], "error": "TUMonline unavailable"}
 
     return {"appointments": _parse_appointments(data)}
@@ -927,4 +975,4 @@ def run_server(host: str = "127.0.0.1", port: int = 8000) -> None:
     """
     import uvicorn
 
-    uvicorn.run(app, host=host, port=port, server_header=False)
+    uvicorn.run(app, host=host, port=port, server_header=False, access_log=False)

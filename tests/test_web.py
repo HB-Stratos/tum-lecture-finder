@@ -1167,6 +1167,41 @@ class TestScheduledUpdate:
         assert web_mod._campus_counts_cache is None
 
     @pytest.mark.asyncio
+    async def test_build_embeddings_runs_in_thread(self, mock_store):
+        """build_embeddings must run via asyncio.to_thread, not block the loop."""
+        from unittest.mock import AsyncMock, patch
+
+        import tum_lecture_finder.web as web_mod
+        from tum_lecture_finder.fetcher import FetchResult
+        from tum_lecture_finder.models import Course
+
+        semesters = [{"id": 204, "key": "25W"}]
+        result = FetchResult(
+            detailed=[Course(course_id=1, semester_key="25W", title_en="A")],
+            list_only=[],
+        )
+
+        with (
+            patch(
+                "tum_lecture_finder.fetcher.fetch_semester_list",
+                new=AsyncMock(return_value=semesters),
+            ),
+            patch(
+                "tum_lecture_finder.fetcher.fetch_courses",
+                new=AsyncMock(return_value=result),
+            ),
+            patch("tum_lecture_finder.search.build_embeddings") as mock_build,
+            patch("tum_lecture_finder.search.invalidate_course_cache"),
+            patch(
+                "tum_lecture_finder.web.asyncio.to_thread",
+                new=AsyncMock(),
+            ) as mock_to_thread,
+        ):
+            await web_mod._scheduled_update()
+
+        mock_to_thread.assert_called_once_with(mock_build, mock_store)
+
+    @pytest.mark.asyncio
     async def test_overlap_guard(self, mock_store):
         """If an update is already running, a new one should be skipped."""
         import tum_lecture_finder.web as web_mod
