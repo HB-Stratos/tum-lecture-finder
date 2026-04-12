@@ -144,7 +144,45 @@ _CREATE_IDENTITY_INDEX = """\
 CREATE INDEX IF NOT EXISTS idx_courses_identity ON courses (identity_code_id);
 """
 
-_UPSERT = """\
+_UPSERT_SMART = """\
+INSERT INTO courses (
+    course_id, semester_key, course_number,
+    title_de, title_en, course_type, sws,
+    organisation, instructors, language, campus,
+    identity_code_id,
+    content_de, content_en,
+    objectives_de, objectives_en,
+    prerequisites, literature
+) VALUES (
+    :course_id, :semester_key, :course_number,
+    :title_de, :title_en, :course_type, :sws,
+    :organisation, :instructors, :language, :campus,
+    :identity_code_id,
+    :content_de, :content_en,
+    :objectives_de, :objectives_en,
+    :prerequisites, :literature
+)
+ON CONFLICT(course_id) DO UPDATE SET
+    semester_key     = excluded.semester_key,
+    course_number    = excluded.course_number,
+    title_de         = excluded.title_de,
+    title_en         = excluded.title_en,
+    course_type      = excluded.course_type,
+    sws              = excluded.sws,
+    organisation     = excluded.organisation,
+    instructors      = excluded.instructors,
+    language         = excluded.language,
+    identity_code_id = excluded.identity_code_id,
+    campus           = COALESCE(NULLIF(excluded.campus, ''), courses.campus),
+    content_de       = COALESCE(NULLIF(excluded.content_de, ''), courses.content_de),
+    content_en       = COALESCE(NULLIF(excluded.content_en, ''), courses.content_en),
+    objectives_de    = COALESCE(NULLIF(excluded.objectives_de, ''), courses.objectives_de),
+    objectives_en    = COALESCE(NULLIF(excluded.objectives_en, ''), courses.objectives_en),
+    prerequisites    = COALESCE(NULLIF(excluded.prerequisites, ''), courses.prerequisites),
+    literature       = COALESCE(NULLIF(excluded.literature, ''), courses.literature);
+"""
+
+_UPSERT_FORCE = """\
 INSERT INTO courses (
     course_id, semester_key, course_number,
     title_de, title_en, course_type, sws,
@@ -180,37 +218,6 @@ ON CONFLICT(course_id) DO UPDATE SET
     objectives_en    = excluded.objectives_en,
     prerequisites    = excluded.prerequisites,
     literature       = excluded.literature;
-"""
-
-_UPSERT_LIST_ONLY = """\
-INSERT INTO courses (
-    course_id, semester_key, course_number,
-    title_de, title_en, course_type, sws,
-    organisation, instructors, language, campus,
-    identity_code_id,
-    content_de, content_en,
-    objectives_de, objectives_en,
-    prerequisites, literature
-) VALUES (
-    :course_id, :semester_key, :course_number,
-    :title_de, :title_en, :course_type, :sws,
-    :organisation, :instructors, :language, :campus,
-    :identity_code_id,
-    :content_de, :content_en,
-    :objectives_de, :objectives_en,
-    :prerequisites, :literature
-)
-ON CONFLICT(course_id) DO UPDATE SET
-    semester_key     = excluded.semester_key,
-    course_number    = excluded.course_number,
-    title_de         = excluded.title_de,
-    title_en         = excluded.title_en,
-    course_type      = excluded.course_type,
-    sws              = excluded.sws,
-    organisation     = excluded.organisation,
-    instructors      = excluded.instructors,
-    language         = excluded.language,
-    identity_code_id = excluded.identity_code_id;
 """
 
 
@@ -325,11 +332,23 @@ class CourseStore:
         self._conn.commit()
 
     # ── write ──────────────────────────────────────────────────────────
-    def upsert_courses(self, courses: Iterable[Course], *, commit: bool = True) -> int:
+    def upsert_courses(
+        self,
+        courses: Iterable[Course],
+        *,
+        force_overwrite: bool = False,
+        commit: bool = True,
+    ) -> int:
         """Insert or update courses. Returns the number of rows affected.
+
+        By default, detail-level fields (descriptions, campus, prerequisites,
+        literature) are only overwritten when the new value is non-empty.  This
+        prevents list-only fetches from clobbering previously-fetched data.
 
         Args:
             courses: Course objects to upsert.
+            force_overwrite: If True, overwrite all columns unconditionally,
+                even with empty strings.
             commit: If True (default), commit the transaction. Pass False to
                 let the caller commit manually (e.g. for batching with other writes).
 
@@ -337,37 +356,9 @@ class CourseStore:
         rows = [_dict_from_course(c) for c in courses]
         if not rows:
             return 0
+        sql = _UPSERT_FORCE if force_overwrite else _UPSERT_SMART
         cur = self._conn.cursor()
-        cur.executemany(_UPSERT, rows)
-        if commit:
-            self._conn.commit()
-        return cur.rowcount
-
-    def upsert_course_list_fields(
-        self,
-        courses: Iterable[Course],
-        *,
-        commit: bool = True,
-    ) -> int:
-        """Upsert only list-level metadata, preserving existing descriptions and campus.
-
-        Use this for incremental updates where detail API calls were skipped.
-        Description columns (content, objectives, prerequisites, literature) and
-        campus are NOT overwritten for existing rows.
-
-        Args:
-            courses: Course objects whose list-level fields should be upserted.
-            commit: If True (default), commit the transaction.
-
-        Returns:
-            Number of rows affected.
-
-        """
-        rows = [_dict_from_course(c) for c in courses]
-        if not rows:
-            return 0
-        cur = self._conn.cursor()
-        cur.executemany(_UPSERT_LIST_ONLY, rows)
+        cur.executemany(sql, rows)
         if commit:
             self._conn.commit()
         return cur.rowcount

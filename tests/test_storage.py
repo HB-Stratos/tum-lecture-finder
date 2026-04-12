@@ -706,11 +706,11 @@ class TestGetCourseIdsWithDetails:
         assert result == {1, 2}
 
 
-class TestUpsertCourseListFields:
-    """Tests for CourseStore.upsert_course_list_fields()."""
+class TestSmartUpsert:
+    """Tests for smart upsert: empty detail fields don't clobber existing data."""
 
-    def test_preserves_descriptions(self, store):
-        """List-only upsert must not overwrite existing descriptions."""
+    def test_preserves_descriptions_by_default(self, store):
+        """Re-upserting with empty descriptions must not overwrite existing ones."""
         store.upsert_courses([
             _make_course(
                 course_id=1,
@@ -721,8 +721,8 @@ class TestUpsertCourseListFields:
                 campus="garching",
             ),
         ])
-        # List-only upsert with updated title but empty descriptions
-        store.upsert_course_list_fields([
+        # Second upsert with updated title but empty detail fields
+        store.upsert_courses([
             _make_course(
                 course_id=1,
                 semester_key="25W",
@@ -733,21 +733,40 @@ class TestUpsertCourseListFields:
         assert row["title_en"] == "New Title"
         assert row["content_en"] == "Important content"
         assert row["objectives_de"] == "Learning goals"
-
-    def test_preserves_campus(self, store):
-        """List-only upsert must not overwrite campus."""
-        store.upsert_courses([
-            _make_course(course_id=1, semester_key="25W", campus="garching"),
-        ])
-        store.upsert_course_list_fields([
-            _make_course(course_id=1, semester_key="25W", campus=""),
-        ])
-        row = store.get_course(1)
         assert row["campus"] == "garching"
 
-    def test_inserts_new_course_with_empty_descriptions(self, store):
-        """A brand-new course via list-only upsert gets empty descriptions."""
-        store.upsert_course_list_fields([
+    def test_overwrites_with_real_values(self, store):
+        """Non-empty new values must replace old ones."""
+        store.upsert_courses([
+            _make_course(course_id=1, semester_key="25W", content_en="Old"),
+        ])
+        store.upsert_courses([
+            _make_course(course_id=1, semester_key="25W", content_en="New"),
+        ])
+        row = store.get_course(1)
+        assert row["content_en"] == "New"
+
+    def test_force_overwrite_clobbers_descriptions(self, store):
+        """force_overwrite=True allows clearing detail fields."""
+        store.upsert_courses([
+            _make_course(
+                course_id=1,
+                semester_key="25W",
+                content_en="Important",
+                campus="garching",
+            ),
+        ])
+        store.upsert_courses(
+            [_make_course(course_id=1, semester_key="25W")],
+            force_overwrite=True,
+        )
+        row = store.get_course(1)
+        assert row["content_en"] == ""
+        assert row["campus"] == ""
+
+    def test_new_course_inserts_empty_strings(self, store):
+        """A brand-new course stores empty detail fields as-is (no conflict path)."""
+        store.upsert_courses([
             _make_course(course_id=99, semester_key="26S", title_en="New Course"),
         ])
         row = store.get_course(99)
@@ -756,8 +775,8 @@ class TestUpsertCourseListFields:
         assert row["content_en"] == ""
         assert row["objectives_en"] == ""
 
-    def test_updates_list_level_fields(self, store):
-        """List-level fields like instructors and organisation are updated."""
+    def test_always_overwrites_list_fields(self, store):
+        """List-level fields like instructors and organisation are always updated."""
         store.upsert_courses([
             _make_course(
                 course_id=1,
@@ -766,7 +785,7 @@ class TestUpsertCourseListFields:
                 organisation="Chair A",
             ),
         ])
-        store.upsert_course_list_fields([
+        store.upsert_courses([
             _make_course(
                 course_id=1,
                 semester_key="25W",
@@ -777,6 +796,34 @@ class TestUpsertCourseListFields:
         row = store.get_course(1)
         assert row["instructors"] == "Prof B"
         assert row["organisation"] == "Chair B"
+
+    def test_preserves_all_seven_detail_fields(self, store):
+        """All 7 detail fields are preserved when re-upserted with empty values."""
+        store.upsert_courses([
+            _make_course(
+                course_id=1,
+                semester_key="25W",
+                campus="garching",
+                content_de="Inhalt",
+                content_en="Content",
+                objectives_de="Ziele",
+                objectives_en="Objectives",
+                prerequisites="Prereqs",
+                literature="Lit",
+            ),
+        ])
+        # Re-upsert with all detail fields empty (default)
+        store.upsert_courses([
+            _make_course(course_id=1, semester_key="25W"),
+        ])
+        row = store.get_course(1)
+        assert row["campus"] == "garching"
+        assert row["content_de"] == "Inhalt"
+        assert row["content_en"] == "Content"
+        assert row["objectives_de"] == "Ziele"
+        assert row["objectives_en"] == "Objectives"
+        assert row["prerequisites"] == "Prereqs"
+        assert row["literature"] == "Lit"
 
 
 class TestSetGetMeta:
@@ -815,12 +862,4 @@ class TestUpsertCommitParam:
         store.upsert_courses([_make_course(course_id=1, semester_key="25W")])
         assert store.get_course(1) is not None
 
-    def test_upsert_list_fields_no_commit(self, store):
-        """With commit=False, list-only upsert data is not visible after rollback."""
-        store.upsert_course_list_fields(
-            [_make_course(course_id=1, semester_key="25W")],
-            commit=False,
-        )
-        store._conn.rollback()
-        assert store.get_course(1) is None
 
