@@ -1,6 +1,9 @@
 """Application-wide paths and constants."""
 
+import logging
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 
 def get_project_root() -> Path:
@@ -24,7 +27,8 @@ def get_project_root() -> Path:
             return parent
 
     # Fallback (should rarely happen)
-    raise RuntimeError("Could not find project root (no marker found)")
+    msg = "Could not find project root (no marker found)"
+    raise RuntimeError(msg)
 
 # ── Data directory ──────────────────────────────────────────────────────────
 DATA_DIR: Path = get_project_root() / "data"
@@ -71,9 +75,18 @@ def format_semester(key: str) -> str:
 
     Returns:
         E.g. ``"Winter 2025/26"`` or ``"Summer 2025"``.
+        Returns the raw key unchanged if it cannot be parsed.
 
     """
-    yy = int(key[:-1])
+    if len(key) < 2 or key[-1].upper() not in {"W", "S"}:  # noqa: PLR2004
+        if key:
+            log.warning("malformed_semester_key: %s", key)
+        return key
+    try:
+        yy = int(key[:-1])
+    except ValueError:
+        log.warning("malformed_semester_key: %s", key)
+        return key
     kind = key[-1]
     year = (1900 + yy) if yy >= 50 else (2000 + yy)  # noqa: PLR2004
     if kind.upper() == "W":

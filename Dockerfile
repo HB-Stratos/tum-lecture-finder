@@ -38,7 +38,9 @@ ENV HF_HUB_OFFLINE=1
 
 # Setup a non-root user
 RUN groupadd --system --gid 999 nonroot \
- && useradd --system --gid 999 --uid 999 --create-home nonroot
+ && useradd --system --gid 999 --uid 999 --create-home nonroot \
+ && apt-get update -qq && apt-get install -y -qq --no-install-recommends curl \
+ && rm -rf /var/lib/apt/lists/*
 
 # ── Layer-split COPY with --link ──────────────────────────────────────
 # --link creates content-addressed layers: if the source bytes haven't

@@ -3,8 +3,6 @@
 import datetime
 from unittest.mock import patch
 
-import pytest
-
 from tum_lecture_finder.config import (
     current_semester_key,
     format_semester,
@@ -111,9 +109,11 @@ class TestFormatSemester:
         """format_semester accepts lowercase type indicator."""
         assert format_semester("25w") == "Winter 2025/26"
 
-    def test_invalid_key_raises(self):
-        with pytest.raises((ValueError, IndexError)):
-            format_semester("")
+    def test_invalid_key_returns_raw(self):
+        """Malformed keys return the raw key instead of crashing."""
+        assert format_semester("") == ""
+        assert format_semester("xyz") == "xyz"
+        assert format_semester("W") == "W"
 
 
 class TestSemesterSortKey:

@@ -2,6 +2,7 @@ services:
   server:
     build:
       context: .
+    restart: unless-stopped
     ports:
       - 8000:8000
     volumes:
@@ -13,6 +14,17 @@ services:
       - TLF_UPDATE_SEMESTERS=4
       - TLF_FULL_UPDATE_EVERY=7
       - TLF_PRELOAD_MODEL=1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+          cpus: "2.0"
 
 volumes:
   tlf-data:
