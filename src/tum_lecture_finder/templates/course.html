@@ -1,8 +1,7 @@
 {% extends "base.html" %} {% block title %}{{ course.title }} — TUM Lecture
 Finder{% endblock %} {% block content %}
-<meta name="course-id" content="{{ course.course_id }}" />
-<div class="course-detail">
-  <a href="javascript:void(0)" class="back-link" id="back-to-search"
+<div class="course-detail" data-course-id="{{ course.course_id }}">
+  <a href="/" class="back-link" id="back-to-search"
     >&larr; Back to search</a
   >
 
@@ -96,13 +95,13 @@ Finder{% endblock %} {% block content %}
     <h3 class="section-title">Content</h3>
     {% if course.content_de %}
     <div class="desc-block">
-      {% if course.content_en %}<span class="lang-tag">DE</span>{% endif %}
-      <div class="desc-text">{{ course.content_de }}</div>
+      {% if course.content_de %}<span class="lang-tag">DE</span>{% endif %}
+      <div class="desc-text" lang="de">{{ course.content_de }}</div>
     </div>
     {% endif %} {% if course.content_en %}
     <div class="desc-block">
       {% if course.content_de %}<span class="lang-tag">EN</span>{% endif %}
-      <div class="desc-text">{{ course.content_en }}</div>
+      <div class="desc-text" lang="en">{{ course.content_en }}</div>
     </div>
     {% endif %}
   </div>
@@ -112,12 +111,12 @@ Finder{% endblock %} {% block content %}
     {% if course.objectives_de %}
     <div class="desc-block">
       {% if course.objectives_en %}<span class="lang-tag">DE</span>{% endif %}
-      <div class="desc-text">{{ course.objectives_de }}</div>
+      <div class="desc-text" lang="de">{{ course.objectives_de }}</div>
     </div>
     {% endif %} {% if course.objectives_en %}
     <div class="desc-block">
       {% if course.objectives_de %}<span class="lang-tag">EN</span>{% endif %}
-      <div class="desc-text">{{ course.objectives_en }}</div>
+      <div class="desc-text" lang="en">{{ course.objectives_en }}</div>
     </div>
     {% endif %}
   </div>

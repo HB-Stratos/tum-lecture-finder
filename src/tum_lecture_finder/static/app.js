@@ -281,7 +281,7 @@
     }
     if (r.organisation) {
       html +=
-        '<span style="font-size:0.8rem;color:var(--text-muted)">' +
+        '<span class="result-org">' +
         escapeHtml(truncate(r.organisation, 60)) +
         "</span>";
     }
@@ -325,6 +325,7 @@
 
   // ── UI helpers ────────────────────────────────────────────────────
   function showLoading() {
+    document.getElementById("results-container").setAttribute("aria-busy", "true");
     loadingIndicator.classList.remove("hidden");
     emptyState.classList.add("hidden");
     resultsStatus.classList.add("hidden");
@@ -333,6 +334,7 @@
   }
 
   function hideLoading() {
+    document.getElementById("results-container").setAttribute("aria-busy", "false");
     loadingIndicator.classList.add("hidden");
   }
 

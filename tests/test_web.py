@@ -1423,6 +1423,44 @@ class TestScheduledUpdateIntegration:
             )
 
 
+# ── Accessibility ─────────────────────────────────────────────────────────────
+
+
+class TestAccessibility:
+    """Tests for accessibility attributes in rendered HTML."""
+
+    def test_skip_link_present(self, client):
+        """Home page should have a skip-to-content link."""
+        resp = client.get("/")
+        assert 'class="skip-link"' in resp.text
+        assert 'href="#main-content"' in resp.text
+
+    def test_nav_has_aria_label(self, client):
+        """Navigation element should have an aria-label."""
+        resp = client.get("/")
+        assert 'aria-label="Main navigation"' in resp.text
+
+    def test_home_has_aria_current(self, client):
+        """The Search nav link should have aria-current='page' on the home page."""
+        resp = client.get("/")
+        assert 'aria-current="page"' in resp.text
+
+    def test_course_detail_has_data_attribute(self, client):
+        """Course detail page should have data-course-id on the detail container."""
+        resp = client.get("/course/1")
+        assert "data-course-id=" in resp.text
+
+    def test_color_scheme_meta(self, client):
+        """Home page should declare color-scheme via meta tag."""
+        resp = client.get("/")
+        assert '<meta name="color-scheme"' in resp.text
+
+    def test_theme_toggle_present(self, client):
+        """Home page should have a theme toggle button."""
+        resp = client.get("/")
+        assert 'id="theme-toggle"' in resp.text
+
+
 class TestHotReloadEmbeddings:
     """Verify that a partial update followed by embedding rebuild makes new
     courses appear in semantic search, while preserving existing courses.

@@ -42,6 +42,226 @@
 
   --max-width: 1100px;
   --transition: 0.2s ease;
+
+  /* Nav chrome */
+  --nav-link-color: rgba(255, 255, 255, 0.8);
+  --nav-link-hover-bg: rgba(255, 255, 255, 0.1);
+  --nav-link-active-bg: rgba(255, 255, 255, 0.15);
+
+  /* Badge palettes */
+  --badge-type-bg: #dbeafe;
+  --badge-type-color: #1e40af;
+  --badge-semester-bg: #dcfce7;
+  --badge-semester-color: #166534;
+  --badge-campus-bg: #fef3c7;
+  --badge-campus-color: #92400e;
+  --badge-frequency-bg: #e0e7ff;
+  --badge-frequency-color: #3730a3;
+  --badge-lang-bg: #f3e8ff;
+  --badge-lang-color: #6b21a8;
+
+  /* Error state */
+  --error-bg: #fef2f2;
+  --error-color: #991b1b;
+  --error-border: #fecaca;
+
+  /* Focus ring */
+  --focus-ring: rgba(0, 101, 189, 0.15);
+
+  /* Stat highlight */
+  --stat-highlight-start: rgba(0, 101, 189, 0.05);
+  --stat-highlight-end: rgba(0, 101, 189, 0.02);
+
+  color-scheme: light dark;
+}
+
+/* ── Dark Mode ────────────────────────────────────────────────────────── */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --tum-blue: #4d9de0;
+    --tum-blue-dark: #6db3f2;
+    --tum-blue-light: #80c0e8;
+    --bg-primary: #1a1f2e;
+    --bg-secondary: #131720;
+    --bg-card: #222838;
+    --bg-input: #2a3042;
+    --bg-hover: #2e3548;
+    --bg-badge: #2a3555;
+    --text-primary: #e8eaf0;
+    --text-secondary: #a8b2c4;
+    --text-muted: #7a8599;
+    --text-inverse: #ffffff;
+    --border-color: #343d52;
+    --border-focus: #4d9de0;
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+    --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+    --nav-link-color: rgba(255, 255, 255, 0.75);
+    --nav-link-hover-bg: rgba(255, 255, 255, 0.08);
+    --nav-link-active-bg: rgba(255, 255, 255, 0.12);
+    --badge-type-bg: #1e3a5f;
+    --badge-type-color: #93c5fd;
+    --badge-semester-bg: #14382a;
+    --badge-semester-color: #86efac;
+    --badge-campus-bg: #3d2e14;
+    --badge-campus-color: #fcd34d;
+    --badge-frequency-bg: #272950;
+    --badge-frequency-color: #a5b4fc;
+    --badge-lang-bg: #351a4a;
+    --badge-lang-color: #d8b4fe;
+    --error-bg: #3b1c1c;
+    --error-color: #fca5a5;
+    --error-border: #7f1d1d;
+    --focus-ring: rgba(77, 157, 224, 0.3);
+    --stat-highlight-start: rgba(77, 157, 224, 0.12);
+    --stat-highlight-end: rgba(77, 157, 224, 0.05);
+  }
+
+  :root:not([data-theme="light"]) .navbar { background-color: #0d1117; box-shadow: 0 1px 0 var(--border-color); }
+  :root:not([data-theme="light"]) .footer { background: #161b26; }
+  :root:not([data-theme="light"]) .filter-group select { color-scheme: dark; }
+  :root:not([data-theme="light"]) .bar { background: linear-gradient(90deg, var(--tum-blue), var(--tum-blue-light)); }
+}
+
+[data-theme="dark"] {
+  --tum-blue: #4d9de0;
+  --tum-blue-dark: #6db3f2;
+  --tum-blue-light: #80c0e8;
+  --bg-primary: #1a1f2e;
+  --bg-secondary: #131720;
+  --bg-card: #222838;
+  --bg-input: #2a3042;
+  --bg-hover: #2e3548;
+  --bg-badge: #2a3555;
+  --text-primary: #e8eaf0;
+  --text-secondary: #a8b2c4;
+  --text-muted: #7a8599;
+  --text-inverse: #ffffff;
+  --border-color: #343d52;
+  --border-focus: #4d9de0;
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+  --nav-link-color: rgba(255, 255, 255, 0.75);
+  --nav-link-hover-bg: rgba(255, 255, 255, 0.08);
+  --nav-link-active-bg: rgba(255, 255, 255, 0.12);
+  --badge-type-bg: #1e3a5f;
+  --badge-type-color: #93c5fd;
+  --badge-semester-bg: #14382a;
+  --badge-semester-color: #86efac;
+  --badge-campus-bg: #3d2e14;
+  --badge-campus-color: #fcd34d;
+  --badge-frequency-bg: #272950;
+  --badge-frequency-color: #a5b4fc;
+  --badge-lang-bg: #351a4a;
+  --badge-lang-color: #d8b4fe;
+  --error-bg: #3b1c1c;
+  --error-color: #fca5a5;
+  --error-border: #7f1d1d;
+  --focus-ring: rgba(77, 157, 224, 0.3);
+  --stat-highlight-start: rgba(77, 157, 224, 0.12);
+  --stat-highlight-end: rgba(77, 157, 224, 0.05);
+}
+
+[data-theme="dark"] .navbar { background-color: #0d1117; box-shadow: 0 1px 0 var(--border-color); }
+[data-theme="dark"] .footer { background: #161b26; }
+[data-theme="dark"] .filter-group select { color-scheme: dark; }
+[data-theme="dark"] .bar { background: linear-gradient(90deg, var(--tum-blue), var(--tum-blue-light)); }
+
+/* ── Accessibility ────────────────────────────────────────────────────── */
+.skip-link {
+    position: absolute;
+    top: -100%;
+    left: 1rem;
+    z-index: 200;
+    padding: 0.5rem 1rem;
+    background: var(--tum-blue);
+    color: var(--text-inverse);
+    border-radius: var(--radius-sm);
+    font-weight: 600;
+    text-decoration: none;
+    transition: top 0.2s ease;
+}
+
+.skip-link:focus {
+    top: 0.5rem;
+}
+
+:focus-visible {
+    outline: 2px solid var(--border-focus);
+    outline-offset: 2px;
+}
+
+:focus:not(:focus-visible) {
+    outline: none;
+}
+
+.nav-link:focus-visible {
+    outline-color: var(--text-inverse);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+}
+
+.result-card:focus-visible {
+    outline: 2px solid var(--tum-blue);
+    outline-offset: 2px;
+    box-shadow: var(--shadow-md);
+}
+
+.btn:focus-visible,
+.btn-load-more:focus-visible,
+.search-bar button:focus-visible {
+    outline: 2px solid var(--border-focus);
+    outline-offset: 2px;
+}
+
+.filter-group select:focus-visible {
+    outline: 2px solid var(--border-focus);
+    outline-offset: 1px;
+}
+
+.semester-link:focus-visible,
+.footer-action-link:focus-visible,
+.back-link:focus-visible {
+    outline: 2px solid var(--tum-blue);
+    outline-offset: 2px;
+}
+
+.filter-tooltip:focus .tooltip-text,
+.filter-tooltip:focus-within .tooltip-text {
+    visibility: visible;
+    opacity: 1;
+}
+
+.result-org {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+.stats-section-spaced {
+    margin-top: 1.5rem;
+}
+
+.theme-toggle {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0.4rem;
+    border-radius: var(--radius-sm);
+    color: var(--nav-link-color);
+    display: flex;
+    align-items: center;
+    transition: color var(--transition), background var(--transition);
+}
+
+.theme-toggle:hover {
+    color: var(--text-inverse);
+    background: var(--nav-link-hover-bg);
+}
+
+.theme-toggle svg {
+    width: 18px;
+    height: 18px;
 }
 
 /* ── Reset & Base ──────────────────────────────────────────────────────── */
@@ -133,10 +353,13 @@ a:hover {
 .nav-links {
   display: flex;
   gap: 0.25rem;
+  list-style: none;
+  padding: 0;
+  margin: 0;
 }
 
 .nav-link {
-  color: rgba(255, 255, 255, 0.8);
+  color: var(--nav-link-color);
   padding: 0.4rem 0.8rem;
   border-radius: var(--radius-sm);
   font-size: 0.9rem;
@@ -146,13 +369,13 @@ a:hover {
 
 .nav-link:hover {
   color: var(--text-inverse);
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--nav-link-hover-bg);
   text-decoration: none;
 }
 
 .nav-link.active {
   color: var(--text-inverse);
-  background: rgba(255, 255, 255, 0.15);
+  background: var(--nav-link-active-bg);
 }
 
 .nav-link-github {
@@ -213,7 +436,7 @@ a:hover {
 
 .search-bar:focus-within {
   border-color: var(--tum-blue);
-  box-shadow: 0 0 0 3px rgba(0, 101, 189, 0.15);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .search-bar input {
@@ -408,28 +631,28 @@ a:hover {
 }
 
 .badge-type {
-  background: #dbeafe;
-  color: #1e40af;
+  background: var(--badge-type-bg);
+  color: var(--badge-type-color);
 }
 
 .badge-semester {
-  background: #dcfce7;
-  color: #166534;
+  background: var(--badge-semester-bg);
+  color: var(--badge-semester-color);
 }
 
 .badge-campus {
-  background: #fef3c7;
-  color: #92400e;
+  background: var(--badge-campus-bg);
+  color: var(--badge-campus-color);
 }
 
 .badge-frequency {
-  background: #e0e7ff;
-  color: #3730a3;
+  background: var(--badge-frequency-bg);
+  color: var(--badge-frequency-color);
 }
 
 .badge-lang {
-  background: #f3e8ff;
-  color: #6b21a8;
+  background: var(--badge-lang-bg);
+  color: var(--badge-lang-color);
 }
 
 .badge-code {
@@ -701,8 +924,8 @@ a:hover {
   border-color: var(--tum-blue);
   background: linear-gradient(
     135deg,
-    rgba(0, 101, 189, 0.05),
-    rgba(0, 101, 189, 0.02)
+    var(--stat-highlight-start),
+    var(--stat-highlight-end)
   );
 }
 
@@ -936,9 +1159,9 @@ a:hover {
 
 /* ── Error state ───────────────────────────────────────────────────────── */
 .error-message {
-  background: #fef2f2;
-  color: #991b1b;
-  border: 1px solid #fecaca;
+  background: var(--error-bg);
+  color: var(--error-color);
+  border: 1px solid var(--error-border);
   border-radius: var(--radius-md);
   padding: 1rem 1.25rem;
   margin-bottom: 1rem;
@@ -1018,4 +1241,14 @@ a:hover {
   .nav-title {
     display: none;
   }
+}
+
+/* ── Reduced Motion ───────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        transition-duration: 0.01ms !important;
+    }
 }

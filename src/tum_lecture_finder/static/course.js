@@ -26,10 +26,10 @@
   // Load schedule from API
   var scheduleSection = document.getElementById("schedule-section");
   var scheduleContent = document.getElementById("schedule-content");
-  var courseIdMeta = document.querySelector('meta[name="course-id"]');
+  var courseIdMeta = document.querySelector('.course-detail[data-course-id]');
 
   if (scheduleSection && scheduleContent && courseIdMeta) {
-    var courseId = courseIdMeta.getAttribute("content");
+    var courseId = courseIdMeta.getAttribute("data-course-id");
 
     fetch("/api/course/" + courseId + "/schedule")
       .then(function (r) {
@@ -44,7 +44,7 @@
         }
         scheduleSection.classList.remove("hidden");
         var html =
-          '<table class="schedule-table"><thead><tr>' +
+          '<table class="schedule-table" aria-label="Course schedule"><thead><tr>' +
           "<th>Day</th><th>Time</th><th>Room</th></tr></thead><tbody>";
         data.appointments.forEach(function (a) {
           var roomCell = a.room_link

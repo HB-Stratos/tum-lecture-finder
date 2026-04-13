@@ -1,4 +1,5 @@
 {% extends "base.html" %} {% block nav_stats_active %}active{% endblock %} {%
+block nav_stats_aria %}aria-current="page"{% endblock %} {%
 block title %}Statistics — TUM Lecture Finder{% endblock %} {% block content %}
 <div class="stats-page">
   <h1>Database Statistics</h1>
@@ -25,7 +26,7 @@ block title %}Statistics — TUM Lecture Finder{% endblock %} {% block content %
   <div class="stats-grid">
     <div class="stats-section">
       <h2>Courses per Semester</h2>
-      <table class="stats-table">
+      <table class="stats-table" aria-label="Courses per semester">
         <thead>
           <tr>
             <th>Semester</th>
@@ -57,7 +58,7 @@ block title %}Statistics — TUM Lecture Finder{% endblock %} {% block content %
     <div class="stats-columns">
       <div class="stats-section">
         <h2>Course Types</h2>
-        <table class="stats-table">
+        <table class="stats-table" aria-label="Course type distribution">
           <thead>
             <tr>
               <th>Type</th>
@@ -77,7 +78,7 @@ block title %}Statistics — TUM Lecture Finder{% endblock %} {% block content %
 
       <div class="stats-section">
         <h2>Campuses</h2>
-        <table class="stats-table">
+        <table class="stats-table" aria-label="Campus distribution">
           <thead>
             <tr>
               <th>Campus</th>
@@ -98,9 +99,9 @@ block title %}Statistics — TUM Lecture Finder{% endblock %} {% block content %
   </div>
 
   {% if update_info %}
-  <div class="stats-section" style="margin-top: 1.5rem;">
+  <div class="stats-section stats-section-spaced">
     <h2>Last Scheduled Update</h2>
-    <table class="stats-table">
+    <table class="stats-table" aria-label="Last scheduled update details">
       <tbody>
         <tr><td>Time</td><td>{{ update_info.time }}</td></tr>
         <tr><td>Mode</td><td><span class="badge badge-type">{{ update_info.tier }}</span></td></tr>
