@@ -264,6 +264,31 @@
     height: 18px;
 }
 
+.lang-toggle {
+    background: none;
+    border: 1px solid var(--nav-link-color);
+    cursor: pointer;
+    padding: 0.2rem 0.45rem;
+    border-radius: var(--radius-sm);
+    color: var(--nav-link-color);
+    display: flex;
+    align-items: center;
+    transition: color var(--transition), background var(--transition), border-color var(--transition);
+}
+
+.lang-toggle:hover {
+    color: var(--text-inverse);
+    background: var(--nav-link-hover-bg);
+    border-color: var(--text-inverse);
+}
+
+.lang-label {
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    line-height: 1;
+}
+
 /* ── Reset & Base ──────────────────────────────────────────────────────── */
 *,
 *::before,
@@ -352,6 +377,7 @@ a:hover {
 
 .nav-links {
   display: flex;
+  align-items: center;
   gap: 0.25rem;
   list-style: none;
   padding: 0;
@@ -359,6 +385,8 @@ a:hover {
 }
 
 .nav-link {
+  display: inline-flex;
+  align-items: center;
   color: var(--nav-link-color);
   padding: 0.4rem 0.8rem;
   border-radius: var(--radius-sm);
