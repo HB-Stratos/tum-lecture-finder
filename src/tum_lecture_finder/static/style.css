@@ -266,24 +266,23 @@
 
 .lang-toggle {
     background: none;
-    border: 1px solid var(--nav-link-color);
+    border: none;
     cursor: pointer;
-    padding: 0.2rem 0.45rem;
+    padding: 0.4rem;
     border-radius: var(--radius-sm);
     color: var(--nav-link-color);
     display: flex;
     align-items: center;
-    transition: color var(--transition), background var(--transition), border-color var(--transition);
+    transition: color var(--transition), background var(--transition);
 }
 
 .lang-toggle:hover {
     color: var(--text-inverse);
     background: var(--nav-link-hover-bg);
-    border-color: var(--text-inverse);
 }
 
 .lang-label {
-    font-size: 0.7rem;
+    font-size: 0.75rem;
     font-weight: 700;
     letter-spacing: 0.05em;
     line-height: 1;
