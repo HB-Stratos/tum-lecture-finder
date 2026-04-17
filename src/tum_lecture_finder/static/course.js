@@ -7,6 +7,9 @@
 (function () {
   "use strict";
 
+  // i18n helper — provided by i18n.js loaded before this script
+  var t = window.t || function (k) { return k; };
+
   // Back to search — preserve search state
   var backLink = document.getElementById("back-to-search");
   if (backLink) {
@@ -39,13 +42,13 @@
         if (!data.appointments || data.appointments.length === 0) {
           scheduleSection.classList.remove("hidden");
           scheduleContent.innerHTML =
-            '<p class="schedule-empty">No schedule data available for this course.</p>';
+            '<p class="schedule-empty">' + t("schedule.no_data") + '</p>';
           return;
         }
         scheduleSection.classList.remove("hidden");
         var html =
-          '<table class="schedule-table" aria-label="Course schedule"><thead><tr>' +
-          "<th>Day</th><th>Time</th><th>Room</th></tr></thead><tbody>";
+          '<table class="schedule-table" aria-label="' + t("a11y.course_schedule") + '"><thead><tr>' +
+          "<th>" + t("schedule.day") + "</th><th>" + t("schedule.time") + "</th><th>" + t("schedule.room") + "</th></tr></thead><tbody>";
         data.appointments.forEach(function (a) {
           var roomCell = a.room_link
             ? '<a href="' +
@@ -69,7 +72,7 @@
       .catch(function () {
         scheduleSection.classList.remove("hidden");
         scheduleContent.innerHTML =
-          '<p class="schedule-empty">Could not load schedule data.</p>';
+          '<p class="schedule-empty">' + t("schedule.load_error") + '</p>';
       });
   }
 

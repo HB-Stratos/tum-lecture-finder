@@ -1,15 +1,14 @@
 {% extends "base.html" %} {% block nav_search_active %}active{% endblock %} {%
 block nav_search_aria %}aria-current="page"{% endblock %} {%
-block title %}TUM Lecture Finder — Search{{ ' "' + request.query_params.get('q',
+block title %}{{ t("meta.search_title") }}{{ ' "' + request.query_params.get('q',
 '') + '"' if request.query_params.get('q') else '' }}{% endblock %} {% block
 content %}
 <div class="search-hero">
-  <h1 class="hero-title">Find your courses at TUM</h1>
+  <h1 class="hero-title">{{ t("search.hero_title") }}</h1>
   <p class="hero-subtitle">
-    Search across <strong>{{ "{:,}".format(total_courses) }}</strong> courses
-    from
+    {{ t("search.hero_subtitle").split("{count}")[0] }}<strong>{{ "{:,}".format(total_courses) }}</strong>{{ t("search.hero_subtitle").split("{count}")[1].split("{semesters}")[0] }}
     <span class="filter-tooltip" tabindex="0" aria-describedby="semester-tooltip"
-      ><strong>{{ semesters|length }}</strong> semesters<span
+      ><strong>{{ semesters|length }}</strong> {{ t("search.hero_subtitle").split("{semesters}")[1] }}<span
         class="tooltip-text"
         id="semester-tooltip"
         role="tooltip"
@@ -31,13 +30,13 @@ content %}
         type="search"
         id="search-input"
         name="q"
-        placeholder='Search all titles, descriptions &amp; more… e.g. "autonomous driving", "MA0001"'
+        placeholder="{{ t('search.placeholder') }}"
         autocomplete="off"
         spellcheck="false"
         maxlength="200"
-        aria-label="Search courses"
+        aria-label="{{ t('a11y.search_courses') }}"
       />
-      <button type="submit" id="search-btn" aria-label="Search">
+      <button type="submit" id="search-btn" aria-label="{{ t('a11y.search_button') }}">
         <svg
           aria-hidden="true"
           width="20"
@@ -57,48 +56,48 @@ content %}
 
     <div class="filters-row">
       <div class="filter-group">
-        <label for="filter-mode">Mode</label>
+        <label for="filter-mode">{{ t("filter.mode") }}</label>
         <select id="filter-mode" name="mode">
           <option
             value="keyword"
-            title="Fast exact keyword matching using SQLite full-text search"
+            title="{{ t('filter.mode_keyword_tooltip') }}"
           >
-            Keyword
+            {{ t("filter.mode_keyword") }}
           </option>
           <option
             value="semantic"
-            title="Meaning-based search using AI — finds synonyms, related concepts"
+            title="{{ t('filter.mode_semantic_tooltip') }}"
           >
-            Semantic
+            {{ t("filter.mode_semantic") }}
           </option>
           <option
             value="hybrid"
             selected
-            title="Combines keyword + semantic for best results"
+            title="{{ t('filter.mode_hybrid_tooltip') }}"
           >
-            Hybrid
+            {{ t("filter.mode_hybrid") }}
           </option>
         </select>
       </div>
       <div class="filter-group">
-        <label for="filter-semester">Semester</label>
+        <label for="filter-semester">{{ t("filter.semester") }}</label>
         <select id="filter-semester" name="semester">
-          <option value="">All Semesters</option>
+          <option value="">{{ t("filter.all_semesters") }}</option>
           {% for s in semester_list %}
           <option value="{{ s.key }}">{{ s.display }}</option>
           {% endfor %}
         </select>
       </div>
       <div class="filter-group">
-        <label for="filter-campus">Campus</label>
+        <label for="filter-campus">{{ t("filter.campus") }}</label>
         <select id="filter-campus" name="campus">
-          <option value="">All Campuses</option>
+          <option value="">{{ t("filter.all_campuses") }}</option>
         </select>
       </div>
       <div class="filter-group">
-        <label for="filter-type">Type</label>
+        <label for="filter-type">{{ t("filter.type") }}</label>
         <select id="filter-type" name="type">
-          <option value="">All Types</option>
+          <option value="">{{ t("filter.all_types") }}</option>
         </select>
       </div>
     </div>
@@ -110,12 +109,12 @@ content %}
   <div id="results-list" class="results-list"></div>
   <div id="load-more-container" class="load-more-container hidden">
     <button id="load-more-btn" class="btn-load-more" type="button">
-      Load more results
+      {{ t("results.load_more") }}
     </button>
   </div>
-  <div id="loading-indicator" class="loading-indicator hidden" role="status" aria-label="Loading search results">
+  <div id="loading-indicator" class="loading-indicator hidden" role="status" aria-label="{{ t('a11y.loading_results') }}">
     <div class="spinner" aria-hidden="true"></div>
-    <span>Searching...</span>
+    <span>{{ t("search.searching") }}</span>
   </div>
   <div id="empty-state" class="empty-state">
     <div class="empty-icon">
@@ -135,9 +134,9 @@ content %}
         <line x1="21" y1="21" x2="16.65" y2="16.65" />
       </svg>
     </div>
-    <p>Press Enter to search across all course data</p>
+    <p>{{ t("search.empty_state") }}</p>
     <p class="empty-hint">
-      Searches titles, descriptions, objectives, prerequisites &amp; literature
+      {{ t("search.empty_hint") }}
     </p>
   </div>
 </div>

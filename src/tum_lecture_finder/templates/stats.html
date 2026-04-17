@@ -1,38 +1,38 @@
 {% extends "base.html" %} {% block nav_stats_active %}active{% endblock %} {%
 block nav_stats_aria %}aria-current="page"{% endblock %} {%
-block title %}Statistics — TUM Lecture Finder{% endblock %} {% block content %}
+block title %}{{ t("meta.stats_title") }}{% endblock %} {% block content %}
 <div class="stats-page">
-  <h1>Database Statistics</h1>
+  <h1>{{ t("stats.title") }}</h1>
 
   <div class="stats-overview">
     <div class="stat-card stat-highlight">
       <div class="stat-number">{{ "{:,}".format(total_courses) }}</div>
-      <div class="stat-label">Total Courses</div>
+      <div class="stat-label">{{ t("stats.total_courses") }}</div>
     </div>
     <div class="stat-card">
       <div class="stat-number">{{ semesters|length }}</div>
-      <div class="stat-label">Semesters</div>
+      <div class="stat-label">{{ t("stats.semesters") }}</div>
     </div>
     <div class="stat-card">
       <div class="stat-number">{{ type_counts|length }}</div>
-      <div class="stat-label">Course Types</div>
+      <div class="stat-label">{{ t("stats.course_types") }}</div>
     </div>
     <div class="stat-card">
       <div class="stat-number">{{ campus_counts|length }}</div>
-      <div class="stat-label">Campuses</div>
+      <div class="stat-label">{{ t("stats.campuses") }}</div>
     </div>
   </div>
 
   <div class="stats-grid">
     <div class="stats-section">
-      <h2>Courses per Semester</h2>
-      <table class="stats-table" aria-label="Courses per semester">
+      <h2>{{ t("stats.courses_per_semester") }}</h2>
+      <table class="stats-table" aria-label="{{ t('a11y.courses_per_semester') }}">
         <thead>
           <tr>
-            <th>Semester</th>
-            <th>Key</th>
-            <th>Courses</th>
-            <th>Distribution</th>
+            <th>{{ t("stats.table_semester") }}</th>
+            <th>{{ t("stats.table_key") }}</th>
+            <th>{{ t("stats.table_courses") }}</th>
+            <th>{{ t("stats.table_distribution") }}</th>
           </tr>
         </thead>
         <tbody>
@@ -57,12 +57,12 @@ block title %}Statistics — TUM Lecture Finder{% endblock %} {% block content %
 
     <div class="stats-columns">
       <div class="stats-section">
-        <h2>Course Types</h2>
-        <table class="stats-table" aria-label="Course type distribution">
+        <h2>{{ t("stats.course_types") }}</h2>
+        <table class="stats-table" aria-label="{{ t('a11y.course_type_distribution') }}">
           <thead>
             <tr>
-              <th>Type</th>
-              <th>Count</th>
+              <th>{{ t("stats.table_type") }}</th>
+              <th>{{ t("stats.table_count") }}</th>
             </tr>
           </thead>
           <tbody>
@@ -77,12 +77,12 @@ block title %}Statistics — TUM Lecture Finder{% endblock %} {% block content %
       </div>
 
       <div class="stats-section">
-        <h2>Campuses</h2>
-        <table class="stats-table" aria-label="Campus distribution">
+        <h2>{{ t("stats.campuses") }}</h2>
+        <table class="stats-table" aria-label="{{ t('a11y.campus_distribution') }}">
           <thead>
             <tr>
-              <th>Campus</th>
-              <th>Count</th>
+              <th>{{ t("stats.table_campus") }}</th>
+              <th>{{ t("stats.table_count") }}</th>
             </tr>
           </thead>
           <tbody>
@@ -100,14 +100,14 @@ block title %}Statistics — TUM Lecture Finder{% endblock %} {% block content %
 
   {% if update_info %}
   <div class="stats-section stats-section-spaced">
-    <h2>Last Scheduled Update</h2>
-    <table class="stats-table" aria-label="Last scheduled update details">
+    <h2>{{ t("stats.last_update") }}</h2>
+    <table class="stats-table" aria-label="{{ t('a11y.last_update_details') }}">
       <tbody>
-        <tr><td>Time</td><td>{{ update_info.time }}</td></tr>
-        <tr><td>Mode</td><td><span class="badge badge-type">{{ update_info.tier }}</span></td></tr>
-        <tr><td>Courses fetched (full detail)</td><td>{{ "{:,}".format(update_info.courses_detailed) }}</td></tr>
-        <tr><td>Courses skipped (list only)</td><td>{{ "{:,}".format(update_info.courses_skipped) }}</td></tr>
-        <tr><td>Semesters</td><td>{{ update_info.semesters | join(", ") }}</td></tr>
+        <tr><td>{{ t("stats.update_time") }}</td><td>{{ update_info.time }}</td></tr>
+        <tr><td>{{ t("stats.update_mode") }}</td><td><span class="badge badge-type">{{ update_info.tier }}</span></td></tr>
+        <tr><td>{{ t("stats.update_fetched") }}</td><td>{{ "{:,}".format(update_info.courses_detailed) }}</td></tr>
+        <tr><td>{{ t("stats.update_skipped") }}</td><td>{{ "{:,}".format(update_info.courses_skipped) }}</td></tr>
+        <tr><td>{{ t("stats.update_semesters") }}</td><td>{{ update_info.semesters | join(", ") }}</td></tr>
       </tbody>
     </table>
   </div>

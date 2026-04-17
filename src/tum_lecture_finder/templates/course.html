@@ -1,8 +1,7 @@
-{% extends "base.html" %} {% block title %}{{ course.title }} — TUM Lecture
-Finder{% endblock %} {% block content %}
+{% extends "base.html" %} {% block title %}{{ t("meta.course_title").replace("{title}", course.title) }}{% endblock %} {% block content %}
 <div class="course-detail" data-course-id="{{ course.course_id }}">
   <a href="/" class="back-link" id="back-to-search"
-    >&larr; Back to search</a
+    >&larr; {{ t("course.back_to_search") }}</a
   >
 
   <div class="course-header">
@@ -30,33 +29,33 @@ Finder{% endblock %} {% block content %}
       rel="noopener noreferrer"
       class="btn btn-primary"
     >
-      View on TUMonline &nearr;
+      {{ t("course.view_on_tumonline") }} &nearr;
     </a>
   </div>
 
   <div class="course-meta-grid">
     <div class="meta-card">
-      <div class="meta-label">Course ID</div>
+      <div class="meta-label">{{ t("course.course_id") }}</div>
       <div class="meta-value">{{ course.course_id }}</div>
     </div>
     {% if course.course_number %}
     <div class="meta-card">
-      <div class="meta-label">Course Code</div>
+      <div class="meta-label">{{ t("course.course_code") }}</div>
       <div class="meta-value">{{ course.course_number }}</div>
     </div>
     {% endif %} {% if course.sws %}
     <div class="meta-card">
-      <div class="meta-label">SWS</div>
+      <div class="meta-label">{{ t("course.sws") }}</div>
       <div class="meta-value">{{ course.sws }}</div>
     </div>
     {% endif %} {% if course.language %}
     <div class="meta-card">
-      <div class="meta-label">Language</div>
+      <div class="meta-label">{{ t("course.language") }}</div>
       <div class="meta-value">{{ course.language }}</div>
     </div>
     {% endif %} {% if course.campus_display %}
     <div class="meta-card">
-      <div class="meta-label">Campus</div>
+      <div class="meta-label">{{ t("course.campus") }}</div>
       <div class="meta-value">{{ course.campus_display }}</div>
     </div>
     {% endif %}
@@ -64,7 +63,7 @@ Finder{% endblock %} {% block content %}
 
   {% if other_semesters %}
   <div class="course-section">
-    <h3 class="section-title">Also offered in</h3>
+    <h3 class="section-title">{{ t("course.also_offered_in") }}</h3>
     <div class="other-semesters">
       {% for s in other_semesters %}
       <a href="/course/{{ s.course_id }}" class="semester-link"
@@ -76,58 +75,58 @@ Finder{% endblock %} {% block content %}
   {% endif %}
 
   <div id="schedule-section" class="course-section hidden">
-    <h3 class="section-title">Schedule &amp; Rooms</h3>
-    <div id="schedule-content" class="schedule-loading">Loading schedule…</div>
+    <h3 class="section-title">{{ t("schedule.title") }}</h3>
+    <div id="schedule-content" class="schedule-loading">{{ t("schedule.loading") }}</div>
   </div>
 
   {% if course.organisation %}
   <div class="course-section">
-    <h3 class="section-title">Organisation</h3>
+    <h3 class="section-title">{{ t("course.organisation") }}</h3>
     <p>{{ course.organisation }}</p>
   </div>
   {% endif %} {% if course.instructors %}
   <div class="course-section">
-    <h3 class="section-title">Instructors</h3>
+    <h3 class="section-title">{{ t("course.instructors") }}</h3>
     <p>{{ course.instructors }}</p>
   </div>
   {% endif %} {% if course.content_de or course.content_en %}
   <div class="course-section">
-    <h3 class="section-title">Content</h3>
+    <h3 class="section-title">{{ t("course.content") }}</h3>
     {% if course.content_de %}
     <div class="desc-block">
-      {% if course.content_de %}<span class="lang-tag">DE</span>{% endif %}
+      {% if course.content_de %}<span class="lang-tag">{{ t("course.lang_tag_de") }}</span>{% endif %}
       <div class="desc-text" lang="de">{{ course.content_de }}</div>
     </div>
     {% endif %} {% if course.content_en %}
     <div class="desc-block">
-      {% if course.content_de %}<span class="lang-tag">EN</span>{% endif %}
+      {% if course.content_de %}<span class="lang-tag">{{ t("course.lang_tag_en") }}</span>{% endif %}
       <div class="desc-text" lang="en">{{ course.content_en }}</div>
     </div>
     {% endif %}
   </div>
   {% endif %} {% if course.objectives_de or course.objectives_en %}
   <div class="course-section">
-    <h3 class="section-title">Learning Objectives</h3>
+    <h3 class="section-title">{{ t("course.learning_objectives") }}</h3>
     {% if course.objectives_de %}
     <div class="desc-block">
-      {% if course.objectives_en %}<span class="lang-tag">DE</span>{% endif %}
+      {% if course.objectives_en %}<span class="lang-tag">{{ t("course.lang_tag_de") }}</span>{% endif %}
       <div class="desc-text" lang="de">{{ course.objectives_de }}</div>
     </div>
     {% endif %} {% if course.objectives_en %}
     <div class="desc-block">
-      {% if course.objectives_de %}<span class="lang-tag">EN</span>{% endif %}
+      {% if course.objectives_de %}<span class="lang-tag">{{ t("course.lang_tag_en") }}</span>{% endif %}
       <div class="desc-text" lang="en">{{ course.objectives_en }}</div>
     </div>
     {% endif %}
   </div>
   {% endif %} {% if course.prerequisites %}
   <div class="course-section">
-    <h3 class="section-title">Prerequisites</h3>
+    <h3 class="section-title">{{ t("course.prerequisites") }}</h3>
     <div class="desc-text">{{ course.prerequisites }}</div>
   </div>
   {% endif %} {% if course.literature %}
   <div class="course-section">
-    <h3 class="section-title">Literature</h3>
+    <h3 class="section-title">{{ t("course.literature") }}</h3>
     <div class="desc-text">{{ course.literature }}</div>
   </div>
   {% endif %}

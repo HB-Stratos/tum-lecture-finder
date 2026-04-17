@@ -1,23 +1,24 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{ lang }}">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>{% block title %}TUM Lecture Finder{% endblock %}</title>
     <meta
       name="description"
-      content="Search across all TU Munich courses — full-text and semantic search."
+      content="{{ t('meta.description') }}"
     />
     <meta name="color-scheme" content="light dark" />
     <meta name="theme-color" content="#0065bd" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#131720" media="(prefers-color-scheme: dark)" />
     <script src="/static/theme.js"></script>
+    <script src="/static/i18n.js"></script>
     <link rel="stylesheet" href="/static/style.css" />
     <link rel="icon" href="/favicon.ico" type="image/svg+xml" />
   </head>
   <body>
-    <a href="#main-content" class="skip-link">Skip to main content</a>
-    <nav class="navbar" aria-label="Main navigation">
+    <a href="#main-content" class="skip-link">{{ t("a11y.skip_to_content") }}</a>
+    <nav class="navbar" aria-label="{{ t('a11y.main_navigation') }}">
       <div class="nav-content">
         <a href="/" class="nav-brand">
           <span class="nav-logo">TUM</span>
@@ -29,7 +30,7 @@
               href="/"
               class="nav-link {% block nav_search_active %}{% endblock %}"
               {% block nav_search_aria %}{% endblock %}
-              >Search</a
+              >{{ t("nav.search") }}</a
             >
           </li>
           <li>
@@ -37,7 +38,7 @@
               href="/stats"
               class="nav-link {% block nav_stats_active %}{% endblock %}"
               {% block nav_stats_aria %}{% endblock %}
-              >Stats</a
+              >{{ t("nav.stats") }}</a
             >
           </li>
           <li>
@@ -46,7 +47,7 @@
               class="nav-link nav-link-github"
               target="_blank"
               rel="noopener noreferrer"
-              aria-label="View source on GitHub"
+              aria-label="{{ t('a11y.view_source_github') }}"
               ><svg
                 aria-hidden="true"
                 viewBox="0 0 16 16"
@@ -64,11 +65,16 @@
 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"
                 />
               </svg>
-              GitHub</a
+              {{ t("nav.github") }}</a
             >
           </li>
           <li>
-            <button class="theme-toggle" id="theme-toggle" aria-label="Toggle dark mode" title="Toggle dark mode">
+            <button class="lang-toggle" id="lang-toggle" aria-label="{{ t('nav.toggle_lang') }}" title="{{ t('nav.toggle_lang') }}">
+              <span class="lang-label" aria-hidden="true">{{ lang|upper }}</span>
+            </button>
+          </li>
+          <li>
+            <button class="theme-toggle" id="theme-toggle" aria-label="{{ t('a11y.toggle_dark_mode') }}" title="{{ t('a11y.toggle_dark_mode') }}">
               <svg class="icon-sun" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
               <svg class="icon-moon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
             </button>
@@ -82,14 +88,14 @@
     <footer class="footer">
       <div class="footer-content">
         <p>
-          TUM Lecture Finder &mdash; Unofficial course search tool for
+          {{ t("footer.description") }}
           <a href="https://www.tum.de" rel="noopener noreferrer" target="_blank"
-            >Technical University of Munich</a
+            >{{ t("footer.tum_name") }}</a
           >
         </p>
         <p class="footer-sub">
-          Data sourced from the public TUMonline API. Not affiliated with TUM.{%
-          if last_updated %} &middot; Last updated: {{ last_updated }}{% endif
+          {{ t("footer.data_source") }}{%
+          if last_updated %} &middot; {{ t("footer.last_updated").replace("{date}", last_updated) }}{% endif
           %}
         </p>
         <p class="footer-sub footer-actions">
@@ -115,7 +121,7 @@
 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"
               />
             </svg>
-            Open source on GitHub</a
+            {{ t("footer.open_source") }}</a
           >
           &middot;
           <a
@@ -123,7 +129,7 @@
             target="_blank"
             rel="noopener noreferrer"
             class="footer-action-link"
-            >Report an issue</a
+            >{{ t("footer.report_issue") }}</a
           >
         </p>
       </div>

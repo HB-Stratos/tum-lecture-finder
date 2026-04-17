@@ -8,6 +8,9 @@
 (function () {
   "use strict";
 
+  // i18n helper — provided by i18n.js loaded before this script
+  var t = window.t || function (k) { return k; };
+
   // ── DOM references ────────────────────────────────────────────────
   var searchForm = document.getElementById("search-form");
   var searchInput = document.getElementById("search-input");
@@ -53,7 +56,7 @@
 
   function populateCampusFilter(campuses) {
     var savedValue = campusSelect.value;
-    campusSelect.innerHTML = '<option value="">All Campuses</option>';
+    campusSelect.innerHTML = '<option value="">' + t("filter.all_campuses") + '</option>';
     campuses.forEach(function (c) {
       var opt = document.createElement("option");
       opt.value = c.campus;
@@ -69,7 +72,7 @@
 
   function populateTypeFilter(types) {
     var savedValue = typeSelect.value;
-    typeSelect.innerHTML = '<option value="">All Types</option>';
+    typeSelect.innerHTML = '<option value="">' + t("filter.all_types") + '</option>';
     types.forEach(function (t) {
       var opt = document.createElement("option");
       opt.value = t.type;
@@ -147,7 +150,7 @@
       showLoading();
     } else {
       loadMoreBtn.disabled = true;
-      loadMoreBtn.textContent = "Loading…";
+      loadMoreBtn.textContent = t("results.loading_more");
     }
 
     var startTime = performance.now();
@@ -189,7 +192,7 @@
     if (data.results.length === 0 && !append) {
       resultsStatus.classList.remove("hidden");
       resultsStatus.innerHTML =
-        '<span>No results found for <strong>"' +
+        '<span>' + t("results.no_results") + ' <strong>"' +
         escapeHtml(data.query) +
         '"</strong></span>';
       hideLoadMore();
@@ -200,19 +203,14 @@
     resultsStatus.classList.remove("hidden");
     var showing = currentOffset + data.results.length;
     resultsStatus.innerHTML =
-      '<span>Showing <span class="count">' +
-      showing +
-      '</span> of <span class="count">' +
-      currentTotalCount +
-      "</span> result" +
-      (currentTotalCount !== 1 ? "s" : "") +
-      ' for <strong>"' +
+      '<span>' + t("results.showing")
+        .replace("{shown}", showing)
+        .replace("{total}", currentTotalCount) +
+      ' <strong>"' +
       escapeHtml(data.query) +
       '"</strong></span>' +
       '<span class="time">' +
-      elapsedMs +
-      "ms · " +
-      data.mode +
+      t("results.time_and_mode").replace("{ms}", elapsedMs).replace("{mode}", data.mode) +
       "</span>";
 
     // Result cards
@@ -358,7 +356,7 @@
     if (loadMoreContainer) {
       loadMoreContainer.classList.remove("hidden");
       loadMoreBtn.disabled = false;
-      loadMoreBtn.textContent = "Load more results";
+      loadMoreBtn.textContent = t("results.load_more");
     }
   }
 
