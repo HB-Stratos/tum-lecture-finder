@@ -9,6 +9,7 @@
 
   // i18n helper — provided by i18n.js loaded before this script
   var t = window.t || function (k) { return k; };
+  var escapeHtml = window.escapeHtml;
 
   // Back to search — preserve search state
   var backLink = document.getElementById("back-to-search");
@@ -74,12 +75,5 @@
         scheduleContent.innerHTML =
           '<p class="schedule-empty">' + t("schedule.load_error") + '</p>';
       });
-  }
-
-  function escapeHtml(s) {
-    if (!s) return "";
-    var d = document.createElement("div");
-    d.appendChild(document.createTextNode(s));
-    return d.innerHTML;
   }
 })();

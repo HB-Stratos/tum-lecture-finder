@@ -28,6 +28,17 @@
     return val !== undefined ? val : key;
   };
 
+  /**
+   * HTML-escape a string to prevent XSS when building innerHTML.
+   * Shared across app.js and course.js.
+   */
+  window.escapeHtml = function (str) {
+    if (!str) return "";
+    var div = document.createElement("div");
+    div.textContent = str;
+    return div.innerHTML;
+  };
+
   // ── Fetch translations (async, fire-and-forget) ─────────────────────
   fetch("/static/i18n/" + lang + ".json")
     .then(function (r) {

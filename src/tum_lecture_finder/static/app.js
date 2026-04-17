@@ -10,6 +10,7 @@
 
   // i18n helper — provided by i18n.js loaded before this script
   var t = window.t || function (k) { return k; };
+  var escapeHtml = window.escapeHtml;
 
   // ── DOM references ────────────────────────────────────────────────
   var searchForm = document.getElementById("search-form");
@@ -375,12 +376,6 @@
   }
 
   // ── Utility ───────────────────────────────────────────────────────
-  function escapeHtml(str) {
-    if (!str) return "";
-    var div = document.createElement("div");
-    div.textContent = str;
-    return div.innerHTML;
-  }
 
   function capitalize(s) {
     if (!s) return "";
