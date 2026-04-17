@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import time
@@ -27,7 +28,7 @@ from tum_lecture_finder.config import DB_PATH, format_semester
 from tum_lecture_finder.logging_config import setup_logging
 from tum_lecture_finder.search import (
     fulltext_search,
-    hybrid_search,
+    hybrid_search_async,
     semantic_search,
 )
 from tum_lecture_finder.storage import CourseStore, row_to_course
@@ -36,6 +37,8 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
 
     from tum_lecture_finder.models import SearchResult
+
+    TranslateFunc = Callable[[str], str]
 
 log: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
@@ -48,6 +51,44 @@ _STATIC_DIR = _HERE / "static"
 _TRUST_PROXY = os.environ.get("TLF_TRUST_PROXY", "0") == "1"
 _PRELOAD_MODEL = os.environ.get("TLF_PRELOAD_MODEL", "1") == "1"
 _LOG_INTERVAL = 500  # progress logging frequency during scheduled updates
+
+
+# ── Translations ─────────────────────────────────────────────────────────
+_TRANSLATIONS: dict[str, dict[str, str]] = {}
+_I18N_DIR = _STATIC_DIR / "i18n"
+for _lang_file in _I18N_DIR.glob("*.json"):
+    with _lang_file.open(encoding="utf-8") as _fh:
+        _TRANSLATIONS[_lang_file.stem] = json.load(_fh)
+
+
+def _get_lang(request: Request) -> str:
+    """Resolve UI language from cookie, then ``Accept-Language``, then English."""
+    cookie = request.cookies.get("lang")
+    if cookie and cookie in _TRANSLATIONS:
+        return cookie
+
+    # Parse Accept-Language: "de-DE,de;q=0.9,en;q=0.8" → try each tag
+    accept = request.headers.get("accept-language", "")
+    for part in accept.split(","):
+        tag = part.split(";")[0].strip().lower()
+        # Try exact match first ("de"), then prefix ("de-de" → "de")
+        if tag in _TRANSLATIONS:
+            return tag
+        prefix = tag.split("-")[0]
+        if prefix in _TRANSLATIONS:
+            return prefix
+
+    return "en"
+
+
+def _make_t(lang: str) -> TranslateFunc:
+    """Return a translation look-up function for *lang*."""
+    strings = _TRANSLATIONS.get(lang, _TRANSLATIONS.get("en", {}))
+
+    def _translate(key: str) -> str:
+        return strings.get(key, key)
+
+    return _translate
 
 
 def _real_ip(request: Request) -> str:
@@ -680,6 +721,7 @@ async def index(request: Request) -> HTMLResponse:
     semesters = store.semester_counts()
     semester_keys = sorted([s[0] for s in semesters], reverse=True)
     semester_list = [{"key": k, "display": format_semester(k)} for k in semester_keys]
+    lang = _get_lang(request)
     return templates.TemplateResponse(
         request,
         "index.html",
@@ -688,6 +730,8 @@ async def index(request: Request) -> HTMLResponse:
             "semesters": semesters,
             "semester_list": semester_list,
             "last_updated": _db_last_updated(),
+            "lang": lang,
+            "t": _make_t(lang),
         },
     )
 
@@ -716,6 +760,7 @@ async def course_detail(request: Request, course_id: int) -> HTMLResponse:
             for cid, sk in sem_rows
         ]
 
+    lang = _get_lang(request)
     return templates.TemplateResponse(
         request,
         "course.html",
@@ -723,6 +768,8 @@ async def course_detail(request: Request, course_id: int) -> HTMLResponse:
             "course": course,
             "other_semesters": other_semesters,
             "last_updated": _db_last_updated(),
+            "lang": lang,
+            "t": _make_t(lang),
         },
     )
 
@@ -739,6 +786,7 @@ async def stats_page(request: Request) -> HTMLResponse:
     type_counts = _get_type_counts(store)
     campus_counts = _get_campus_counts(store)
 
+    lang = _get_lang(request)
     return templates.TemplateResponse(
         request,
         "stats.html",
@@ -749,6 +797,8 @@ async def stats_page(request: Request) -> HTMLResponse:
             "campus_counts": campus_counts,
             "last_updated": _db_last_updated(),
             "update_info": _get_update_info(),
+            "lang": lang,
+            "t": _make_t(lang),
         },
     )
 
@@ -785,7 +835,8 @@ async def api_search(  # noqa: PLR0913
     fetch_limit = min(limit + offset + 200, 2500)
 
     if mode == "keyword":
-        results = fulltext_search(
+        results = await asyncio.to_thread(
+            fulltext_search,
             store,
             q,
             course_type=type_clean,
@@ -793,7 +844,8 @@ async def api_search(  # noqa: PLR0913
             limit=fetch_limit,
         )
     elif mode == "semantic":
-        results = semantic_search(
+        results = await asyncio.to_thread(
+            semantic_search,
             store,
             q,
             course_type=type_clean,
@@ -801,7 +853,7 @@ async def api_search(  # noqa: PLR0913
             limit=fetch_limit,
         )
     else:
-        results = hybrid_search(
+        results = await hybrid_search_async(
             store,
             q,
             course_type=type_clean,
