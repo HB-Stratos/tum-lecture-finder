@@ -63,7 +63,7 @@
 
   {% if other_semesters %}
   <div class="course-section">
-    <h3 class="section-title">{{ t("course.also_offered_in") }}</h3>
+    <h2 class="section-title">{{ t("course.also_offered_in") }}</h2>
     <div class="other-semesters">
       {% for s in other_semesters %}
       <a href="/course/{{ s.course_id }}" class="semester-link"
@@ -75,23 +75,23 @@
   {% endif %}
 
   <div id="schedule-section" class="course-section hidden">
-    <h3 class="section-title">{{ t("schedule.title") }}</h3>
+    <h2 class="section-title">{{ t("schedule.title") }}</h2>
     <div id="schedule-content" class="schedule-loading">{{ t("schedule.loading") }}</div>
   </div>
 
   {% if course.organisation %}
   <div class="course-section">
-    <h3 class="section-title">{{ t("course.organisation") }}</h3>
+    <h2 class="section-title">{{ t("course.organisation") }}</h2>
     <p>{{ course.organisation }}</p>
   </div>
   {% endif %} {% if course.instructors %}
   <div class="course-section">
-    <h3 class="section-title">{{ t("course.instructors") }}</h3>
+    <h2 class="section-title">{{ t("course.instructors") }}</h2>
     <p>{{ course.instructors }}</p>
   </div>
   {% endif %} {% if course.content_de or course.content_en %}
   <div class="course-section">
-    <h3 class="section-title">{{ t("course.content") }}</h3>
+    <h2 class="section-title">{{ t("course.content") }}</h2>
     {% if course.content_de %}
     <div class="desc-block">
       {% if course.content_de %}<span class="lang-tag">{{ t("course.lang_tag_de") }}</span>{% endif %}
@@ -106,7 +106,7 @@
   </div>
   {% endif %} {% if course.objectives_de or course.objectives_en %}
   <div class="course-section">
-    <h3 class="section-title">{{ t("course.learning_objectives") }}</h3>
+    <h2 class="section-title">{{ t("course.learning_objectives") }}</h2>
     {% if course.objectives_de %}
     <div class="desc-block">
       {% if course.objectives_en %}<span class="lang-tag">{{ t("course.lang_tag_de") }}</span>{% endif %}
@@ -121,12 +121,12 @@
   </div>
   {% endif %} {% if course.prerequisites %}
   <div class="course-section">
-    <h3 class="section-title">{{ t("course.prerequisites") }}</h3>
+    <h2 class="section-title">{{ t("course.prerequisites") }}</h2>
     <div class="desc-text">{{ course.prerequisites }}</div>
   </div>
   {% endif %} {% if course.literature %}
   <div class="course-section">
-    <h3 class="section-title">{{ t("course.literature") }}</h3>
+    <h2 class="section-title">{{ t("course.literature") }}</h2>
     <div class="desc-text">{{ course.literature }}</div>
   </div>
   {% endif %}
