@@ -144,7 +144,7 @@ def main() -> None:
     default=False,
     help="Show detailed progress (per-semester counts, timing).",
 )
-def update(  # noqa: PLR0915
+def update(  # noqa: C901, PLR0915
     concurrency: int,
     semesters: tuple[str, ...],
     recent_n: int | None,
@@ -170,15 +170,12 @@ def update(  # noqa: PLR0915
       tlf update -v                # verbose output
     """
     from tum_lecture_finder.fetcher import (
-        fetch_courses,
         fetch_semester_list,
         resolve_semester_ids,
     )
+    from tum_lecture_finder.updater import run_update
 
     store = CourseStore()
-
-    # Load cached building-code → campus mappings
-    building_cache = store.get_building_cache()
 
     # Resolve which semesters to fetch
     semester_ids: list[int] | None = None
@@ -208,8 +205,9 @@ def update(  # noqa: PLR0915
             total=None,
             visible=False,
         )
+        emb_task: TaskID = progress.add_task("Embeddings", total=None, visible=False)
 
-        _lt, _dt = list_task, detail_task
+        _lt, _dt, _et = list_task, detail_task, emb_task
 
         def _on_list(fetched: int, total: int, _t: TaskID = _lt) -> None:
             progress.update(_t, completed=fetched, total=total)
@@ -223,51 +221,35 @@ def update(  # noqa: PLR0915
             if verbose:
                 progress.console.print(f"  [dim]Fetched semester [cyan]{sem_key}[/cyan][/dim]")
 
-        result = asyncio.run(
-            fetch_courses(
-                semester_ids=semester_ids,
-                concurrency=concurrency,
-                building_cache=building_cache,
-                on_list_progress=_on_list,
-                on_detail_progress=_on_detail,
-                on_semester=_on_semester,
-            )
-        )
-        courses = result.detailed + result.list_only
+        def _on_emb(done: int, total: int, _t: TaskID = _et) -> None:
+            if not progress.tasks[_t].visible:
+                progress.update(_t, visible=True, total=total)
+            progress.update(_t, completed=done, total=total)
 
-    if courses:
-        semesters_found = {c.semester_key for c in courses}
-        sem_label = ", ".join(sorted(semesters_found))
-
-        console.print("[dim]Saving courses to database...[/dim]")
-        count = store.upsert_courses(courses)
-        console.print("[dim]Computing semester cross-references...[/dim]")
-        store.compute_other_semesters()
-        store.upsert_building_cache(building_cache)
-        console.print(
-            f"[green]Done.[/green] {count} courses stored"
-            f" ({len(semesters_found)} semesters: [cyan]{sem_label}[/cyan])."
-        )
-
-        # Rebuild semantic search embeddings — load model quietly, then
-        # encode with a visible Rich progress bar.
-        console.print("[dim]Rebuilding semantic search index...[/dim]")
+        # Suppress noisy model loading output, then run the full pipeline.
         with _QuietModelLoad(banner=False):
-            from tum_lecture_finder.search import (
-                build_embeddings,
-                ensure_model_loaded,
-            )
+            from tum_lecture_finder.search import ensure_model_loaded
 
             ensure_model_loaded()
 
-        with _make_progress() as emb_progress:
-            emb_task = emb_progress.add_task("Embeddings", total=None)
+        result = asyncio.run(
+            run_update(
+                store,
+                semester_ids,
+                concurrency=concurrency,
+                on_list_progress=_on_list,
+                on_detail_progress=_on_detail,
+                on_semester=_on_semester,
+                on_embeddings_progress=_on_emb,
+            )
+        )
 
-            def _on_emb(done: int, total: int) -> None:
-                emb_progress.update(emb_task, completed=done, total=total)
-
-            build_embeddings(store, on_progress=_on_emb)
-
+    if result.stored:
+        sem_label = ", ".join(sorted(result.semesters))
+        console.print(
+            f"[green]Done.[/green] {result.stored} courses stored"
+            f" ({len(result.semesters)} semesters: [cyan]{sem_label}[/cyan])."
+        )
         console.print("[green]Semantic index ready.[/green]")
     else:
         console.print("\n[yellow]No courses returned by the API.[/yellow]")
@@ -737,18 +719,18 @@ def _probe_fetch_future(future_sems: list[dict]) -> None:
         console.print("[yellow]No future semesters to fetch.[/yellow]")
         return
 
-    from tum_lecture_finder.fetcher import fetch_courses
+    from tum_lecture_finder.updater import run_update
 
     console.print(f"\n[bold]Fetching {len(future_sems)} future semester(s)...[/bold]")
 
     future_ids = [s["id"] for s in future_sems]
     store = CourseStore()
-    building_cache = store.get_building_cache()
 
     with _make_progress() as progress:
         list_task: TaskID = progress.add_task("Course list", total=100)
         detail_task: TaskID = progress.add_task("Descriptions", total=None, visible=False)
-        _lt, _dt = list_task, detail_task
+        emb_task: TaskID = progress.add_task("Embeddings", total=None, visible=False)
+        _lt, _dt, _et = list_task, detail_task, emb_task
 
         def _on_list(fetched: int, total: int, _t: TaskID = _lt) -> None:
             progress.update(_t, completed=fetched, total=total)
@@ -758,48 +740,33 @@ def _probe_fetch_future(future_sems: list[dict]) -> None:
                 progress.update(_t, visible=True, total=total)
             progress.update(_t, completed=fetched, total=total)
 
+        def _on_emb(done: int, total: int, _t: TaskID = _et) -> None:
+            if not progress.tasks[_t].visible:
+                progress.update(_t, visible=True, total=total)
+            progress.update(_t, completed=done, total=total)
+
+        with _QuietModelLoad(banner=False):
+            from tum_lecture_finder.search import ensure_model_loaded
+
+            ensure_model_loaded()
+
         result = asyncio.run(
-            fetch_courses(
-                semester_ids=future_ids,
-                building_cache=building_cache,
+            run_update(
+                store,
+                future_ids,
                 on_list_progress=_on_list,
                 on_detail_progress=_on_detail,
+                on_embeddings_progress=_on_emb,
             )
         )
-        courses = result.detailed + result.list_only
 
-    if courses:
-        count = store.upsert_courses(courses)
-        store.compute_other_semesters()
-        store.upsert_building_cache(building_cache)
-        console.print(f"[green]Done.[/green] {count} future courses stored.")
-        _rebuild_embeddings(store)
+    if result.stored:
+        console.print(f"[green]Done.[/green] {result.stored} future courses stored.")
+        console.print("[green]Semantic index ready.[/green]")
     else:
         console.print("[yellow]No courses found in future semesters.[/yellow]")
 
     store.close()
-
-
-def _rebuild_embeddings(store: CourseStore) -> None:
-    """Rebuild the semantic embedding index for a given store.
-
-    Args:
-        store: The :class:`CourseStore` whose courses to embed.
-
-    """
-    from tum_lecture_finder.search import build_embeddings, ensure_model_loaded
-
-    console.print("[dim]Rebuilding semantic index...[/dim]")
-    with _QuietModelLoad(banner=False):
-        ensure_model_loaded()
-    with _make_progress() as emb_progress:
-        emb_task = emb_progress.add_task("Embeddings", total=None)
-
-        def _on_emb(done: int, total: int) -> None:
-            emb_progress.update(emb_task, completed=done, total=total)
-
-        build_embeddings(store, on_progress=_on_emb)
-    console.print("[green]Semantic index ready.[/green]")
 
 
 def _semester_is_future(key: str, current: str) -> bool:

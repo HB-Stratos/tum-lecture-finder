@@ -153,11 +153,12 @@ async def _scheduled_update() -> None:  # noqa: PLR0915
             current_semester_key,
             is_current_or_future_semester,
         )
-        from tum_lecture_finder.fetcher import fetch_courses, fetch_semester_list
+        from tum_lecture_finder.fetcher import fetch_semester_list
         from tum_lecture_finder.search import (
             build_embeddings,
             invalidate_course_cache,
         )
+        from tum_lecture_finder.updater import run_update
 
         _update_run_count += 1
         is_full = (_update_run_count % _FULL_UPDATE_EVERY == 0)
@@ -191,8 +192,6 @@ async def _scheduled_update() -> None:  # noqa: PLR0915
                     skip_count=len(skip_ids),
                 )
 
-        building_cache = store.get_building_cache()
-
         # Progress callbacks — log every _LOG_INTERVAL items
 
         def _on_list(fetched: int, total: int) -> None:
@@ -203,37 +202,22 @@ async def _scheduled_update() -> None:  # noqa: PLR0915
             if fetched % _LOG_INTERVAL == 0 or fetched == total:
                 sched_log.info("detail_fetch_progress", fetched=fetched, total=total)
 
-        fetch_started = time.perf_counter()
-        result = await fetch_courses(
-            semester_ids=semester_ids,
-            building_cache=building_cache,
+        result = await run_update(
+            store,
+            semester_ids,
             skip_detail_ids=skip_ids,
             on_list_progress=_on_list,
             on_detail_progress=_on_detail,
-        )
-        fetch_s = round(time.perf_counter() - fetch_started, 1)
-        sched_log.info(
-            "fetch_complete",
-            detailed=len(result.detailed),
-            list_only=len(result.list_only),
-            duration_s=fetch_s,
+            rebuild_embeddings=False,  # handled below with async + cache invalidation
         )
 
-        all_courses = result.detailed + result.list_only
-        if all_courses:
-            # Upsert in a single transaction — smart upsert preserves
-            # existing detail fields when new values are empty.
-            upsert_started = time.perf_counter()
-            store.upsert_courses(all_courses, commit=False)
-            store.commit()
-            upsert_s = round(time.perf_counter() - upsert_started, 1)
-            sched_log.info("upsert_complete", courses=len(all_courses), duration_s=upsert_s)
-
-            xref_started = time.perf_counter()
-            store.compute_other_semesters()
-            store.upsert_building_cache(building_cache)
-            xref_s = round(time.perf_counter() - xref_started, 1)
-            sched_log.info("crossrefs_complete", duration_s=xref_s)
+        if result.stored:
+            sched_log.info(
+                "fetch_and_store_complete",
+                detailed=result.detailed,
+                list_only=result.skipped,
+                stored=result.stored,
+            )
 
             # Invalidate caches BEFORE rebuilding embeddings
             invalidate_course_cache()
@@ -250,16 +234,16 @@ async def _scheduled_update() -> None:  # noqa: PLR0915
             # Persist update stats
             store.set_meta("last_update_time", datetime.now(UTC).isoformat())
             store.set_meta("last_update_tier", tier)
-            store.set_meta("last_update_detailed", str(len(result.detailed)))
-            store.set_meta("last_update_skipped", str(len(result.list_only)))
+            store.set_meta("last_update_detailed", str(result.detailed))
+            store.set_meta("last_update_skipped", str(result.skipped))
             store.set_meta("last_update_semesters", ",".join(semester_keys))
 
             total_s = round(time.perf_counter() - update_started, 1)
             sched_log.info(
                 "scheduled_update_done",
-                courses_detailed=len(result.detailed),
-                courses_skipped=len(result.list_only),
-                total_stored=len(all_courses),
+                courses_detailed=result.detailed,
+                courses_skipped=result.skipped,
+                total_stored=result.stored,
                 duration_s=total_s,
             )
         else:
