@@ -9,28 +9,28 @@
   "use strict";
 
   // i18n helper — provided by i18n.js loaded before this script
-  var t = window.t || function (k) { return k; };
-  var escapeHtml = window.escapeHtml;
+  const t = window.t || function (k) { return k; };
+  const escapeHtml = window.escapeHtml;
 
   // ── DOM references ────────────────────────────────────────────────
-  var searchForm = document.getElementById("search-form");
-  var searchInput = document.getElementById("search-input");
-  var modeSelect = document.getElementById("filter-mode");
-  var semesterSelect = document.getElementById("filter-semester");
-  var campusSelect = document.getElementById("filter-campus");
-  var typeSelect = document.getElementById("filter-type");
-  var resultsStatus = document.getElementById("results-status");
-  var resultsList = document.getElementById("results-list");
-  var loadingIndicator = document.getElementById("loading-indicator");
-  var emptyState = document.getElementById("empty-state");
-  var loadMoreContainer = document.getElementById("load-more-container");
-  var loadMoreBtn = document.getElementById("load-more-btn");
+  const searchForm = document.getElementById("search-form");
+  const searchInput = document.getElementById("search-input");
+  const modeSelect = document.getElementById("filter-mode");
+  const semesterSelect = document.getElementById("filter-semester");
+  const campusSelect = document.getElementById("filter-campus");
+  const typeSelect = document.getElementById("filter-type");
+  const resultsStatus = document.getElementById("results-status");
+  const resultsList = document.getElementById("results-list");
+  const loadingIndicator = document.getElementById("loading-indicator");
+  const emptyState = document.getElementById("empty-state");
+  const loadMoreContainer = document.getElementById("load-more-container");
+  const loadMoreBtn = document.getElementById("load-more-btn");
 
   // ── State ─────────────────────────────────────────────────────────
-  var currentController = null;
-  var currentOffset = 0;
-  var currentTotalCount = 0;
-  var PAGE_SIZE = 20;
+  let currentController = null;
+  let currentOffset = 0;
+  let currentTotalCount = 0;
+  const PAGE_SIZE = 20;
 
   // ── Initialize ────────────────────────────────────────────────────
   function init() {
@@ -56,10 +56,10 @@
   }
 
   function populateCampusFilter(campuses) {
-    var savedValue = campusSelect.value;
+    const savedValue = campusSelect.value;
     campusSelect.innerHTML = '<option value="">' + t("filter.all_campuses") + '</option>';
     campuses.forEach(function (c) {
-      var opt = document.createElement("option");
+      const opt = document.createElement("option");
       opt.value = c.campus;
       opt.textContent =
         (c.display || capitalize(c.campus)) +
@@ -72,12 +72,12 @@
   }
 
   function populateTypeFilter(types) {
-    var savedValue = typeSelect.value;
+    const savedValue = typeSelect.value;
     typeSelect.innerHTML = '<option value="">' + t("filter.all_types") + '</option>';
-    types.forEach(function (t) {
-      var opt = document.createElement("option");
-      opt.value = t.type;
-      opt.textContent = t.type + " (" + t.count.toLocaleString() + ")";
+    types.forEach(function (ct) {
+      const opt = document.createElement("option");
+      opt.value = ct.type;
+      opt.textContent = ct.type + " (" + ct.count.toLocaleString() + ")";
       typeSelect.appendChild(opt);
     });
     if (savedValue) typeSelect.value = savedValue;
@@ -115,7 +115,7 @@
 
   // ── Search execution ──────────────────────────────────────────────
   function doSearch(append) {
-    var query = searchInput.value.trim();
+    const query = searchInput.value.trim();
     if (!query) {
       clearResults();
       showEmptyState();
@@ -127,7 +127,7 @@
     }
     currentController = new AbortController();
 
-    var params = new URLSearchParams();
+    const params = new URLSearchParams();
     params.set("q", query);
     params.set("mode", modeSelect.value);
     if (semesterSelect && semesterSelect.value)
@@ -138,7 +138,7 @@
     params.set("offset", String(currentOffset));
 
     // Update URL (without offset for clean URLs)
-    var urlParams = new URLSearchParams();
+    const urlParams = new URLSearchParams();
     urlParams.set("q", query);
     urlParams.set("mode", modeSelect.value);
     if (semesterSelect && semesterSelect.value)
@@ -154,7 +154,7 @@
       loadMoreBtn.textContent = t("results.loading_more");
     }
 
-    var startTime = performance.now();
+    const startTime = performance.now();
 
     fetch("/api/search?" + params.toString(), {
       signal: currentController.signal,
@@ -169,7 +169,7 @@
         return r.json();
       })
       .then(function (data) {
-        var elapsed = Math.round(performance.now() - startTime);
+        const elapsed = Math.round(performance.now() - startTime);
         currentTotalCount = data.total_count || data.count;
         renderResults(data, elapsed, append);
       })
@@ -202,7 +202,7 @@
 
     // Status bar
     resultsStatus.classList.remove("hidden");
-    var showing = currentOffset + data.results.length;
+    const showing = currentOffset + data.results.length;
     resultsStatus.innerHTML =
       '<span>' + t("results.showing")
         .replace("{shown}", showing)
@@ -215,7 +215,7 @@
       "</span>";
 
     // Result cards
-    var fragment = document.createDocumentFragment();
+    const fragment = document.createDocumentFragment();
     data.results.forEach(function (r) {
       fragment.appendChild(createResultCard(r));
     });
@@ -230,15 +230,15 @@
   }
 
   function createResultCard(r) {
-    var card = document.createElement("a");
+    const card = document.createElement("a");
     card.className = "result-card";
     card.href = "/course/" + r.course_id;
 
-    var title = r.title_en || r.title_de;
-    var subtitle =
+    const title = r.title_en || r.title_de;
+    const subtitle =
       r.title_en && r.title_de && r.title_en !== r.title_de ? r.title_de : "";
 
-    var html = '<div class="result-header">';
+    let html = '<div class="result-header">';
     html += '<div><div class="result-title">' + escapeHtml(title) + "</div>";
     if (subtitle) {
       html += '<div class="result-subtitle">' + escapeHtml(subtitle) + "</div>";
@@ -298,7 +298,7 @@
   // ── URL state management ──────────────────────────────────────────
   function setSelectIfValid(selectEl, value) {
     if (!selectEl) return;
-    for (var i = 0; i < selectEl.options.length; i++) {
+    for (let i = 0; i < selectEl.options.length; i++) {
       if (selectEl.options[i].value === value) {
         selectEl.value = value;
         return;
@@ -307,7 +307,7 @@
   }
 
   function restoreFromURL() {
-    var params = new URLSearchParams(window.location.search);
+    const params = new URLSearchParams(window.location.search);
     if (params.has("q")) searchInput.value = params.get("q");
     if (params.has("mode")) setSelectIfValid(modeSelect, params.get("mode"));
     if (params.has("semester"))

@@ -8,11 +8,11 @@
   "use strict";
 
   // i18n helper — provided by i18n.js loaded before this script
-  var t = window.t || function (k) { return k; };
-  var escapeHtml = window.escapeHtml;
+  const t = window.t || function (k) { return k; };
+  const escapeHtml = window.escapeHtml;
 
   // Back to search — preserve search state
-  var backLink = document.getElementById("back-to-search");
+  const backLink = document.getElementById("back-to-search");
   if (backLink) {
     backLink.addEventListener("click", function (e) {
       e.preventDefault();
@@ -28,12 +28,12 @@
   }
 
   // Load schedule from API
-  var scheduleSection = document.getElementById("schedule-section");
-  var scheduleContent = document.getElementById("schedule-content");
-  var courseIdMeta = document.querySelector('.course-detail[data-course-id]');
+  const scheduleSection = document.getElementById("schedule-section");
+  const scheduleContent = document.getElementById("schedule-content");
+  const courseIdMeta = document.querySelector('.course-detail[data-course-id]');
 
   if (scheduleSection && scheduleContent && courseIdMeta) {
-    var courseId = courseIdMeta.getAttribute("data-course-id");
+    const courseId = courseIdMeta.getAttribute("data-course-id");
 
     fetch("/api/course/" + courseId + "/schedule")
       .then(function (r) {
@@ -47,11 +47,11 @@
           return;
         }
         scheduleSection.classList.remove("hidden");
-        var html =
+        let html =
           '<table class="schedule-table" aria-label="' + t("a11y.course_schedule") + '"><thead><tr>' +
           "<th>" + t("schedule.day") + "</th><th>" + t("schedule.time") + "</th><th>" + t("schedule.room") + "</th></tr></thead><tbody>";
         data.appointments.forEach(function (a) {
-          var roomCell = a.room_link
+          const roomCell = a.room_link
             ? '<a href="' +
               escapeHtml(a.room_link) +
               '" target="_blank" rel="noopener noreferrer" class="room-link">' +

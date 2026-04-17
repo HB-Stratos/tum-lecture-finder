@@ -11,7 +11,7 @@
   "use strict";
 
   // ── Early detection (runs immediately, before first paint) ──────────
-  var lang =
+  const lang =
     localStorage.getItem("lang") ||
     document.documentElement.getAttribute("lang") ||
     "en";
@@ -24,7 +24,7 @@
    * otherwise returns the key itself so the UI is never blank.
    */
   window.t = function (key) {
-    var val = window.__TLF_TRANSLATIONS[key];
+    const val = window.__TLF_TRANSLATIONS[key];
     return val !== undefined ? val : key;
   };
 
@@ -34,7 +34,7 @@
    */
   window.escapeHtml = function (str) {
     if (!str) return "";
-    var div = document.createElement("div");
+    const div = document.createElement("div");
     div.textContent = str;
     return div.innerHTML;
   };
@@ -54,16 +54,16 @@
 
   // ── Toggle wiring (runs after DOM is ready) ─────────────────────────
   document.addEventListener("DOMContentLoaded", function () {
-    var toggle = document.getElementById("lang-toggle");
+    const toggle = document.getElementById("lang-toggle");
     if (!toggle) return;
 
-    var label = toggle.querySelector(".lang-label");
+    const label = toggle.querySelector(".lang-label");
     if (label) {
       label.textContent = lang.toUpperCase();
     }
 
     toggle.addEventListener("click", function () {
-      var newLang = lang === "en" ? "de" : "en";
+      const newLang = lang === "en" ? "de" : "en";
       localStorage.setItem("lang", newLang);
       document.cookie =
         "lang=" + newLang + ";path=/;max-age=31536000;SameSite=Lax";
